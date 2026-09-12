@@ -25,7 +25,11 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - db-data:/var/lib/postgresql/data
+      # postgres:18+ はデータを /var/lib/postgresql/<major>/docker に置き、
+      # /var/lib/postgresql/data へのマウントを検出するとエラーで停止する
+      # （pg_upgrade --link をマウント境界を跨がずに行えるようにするため）。
+      # マウントは親ディレクトリ 1 点に置く。
+      - db-data:/var/lib/postgresql
     healthcheck:
       # api は「起動した」ではなく「接続を受け付ける」まで待つ必要がある。
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-chat}"]
