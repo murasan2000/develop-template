@@ -5,13 +5,53 @@
   padding: 0.7rem 1rem;
   background: var(--danger-surface);
   color: var(--danger);
-  border-bottom: 1px solid var(--danger-border);
   font-size: 0.875rem;
+}
+
+.error-banner--top {
+  border-bottom: 1px solid var(--danger-border);
+}
+
+/* 会話の流れに紐づくエラーはチャットペイン内に収め、入力欄のすぐ上に置く
+   （フルブリードの上部バナーだと、どの会話のエラーか分かりにくいため）。 */
+.error-banner--inline {
+  margin: 0 auto 0.6rem;
+  width: 100%;
+  max-width: 46rem;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-md);
 }
 
 .error-banner__message {
   flex: 1;
   line-height: 1.4;
+  /* 長い文字列・URL のような改行できないトークンでもレイアウトを壊さない。 */
+  overflow-wrap: anywhere;
+}
+
+.error-banner__retry {
+  flex-shrink: 0;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--danger);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.error-banner__retry:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--accent-contrast);
+}
+
+.error-banner__retry:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .error-banner__close {
@@ -30,4 +70,10 @@
 
 .error-banner__close:hover {
   background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .error-banner__retry {
+    transition: none;
+  }
 }

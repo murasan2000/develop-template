@@ -8,6 +8,6 @@
 
 from __future__ import annotations
 
-from app.services.agents.runtime import ChatAgentRuntime, create_chat_runtime
+from app.services.agents.runtime import AgentInvocationError, ChatAgentRuntime, create_chat_runtime
 
-__all__ = ["ChatAgentRuntime", "create_chat_runtime"]
+__all__ = ["AgentInvocationError", "ChatAgentRuntime", "create_chat_runtime"]

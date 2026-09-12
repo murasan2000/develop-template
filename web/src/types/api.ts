@@ -46,8 +46,14 @@ export type SendMessageRequest = {
 
 export type DoneEventData = Message & { title: string };
 
+// クライアントが「再試行を勧めるか」を判断するための分類。
+// model_overloaded / rate_limited は再送で直る見込みがあり、
+// model_unavailable / internal は設定やサーバ側の問題なので再送しても直らない。
+export type ErrorCode = 'model_overloaded' | 'rate_limited' | 'model_unavailable' | 'internal';
+
 export type ErrorEventData = {
-  message: string;
+  message: string; // サーバ側でユーザー向け日本語に変換済み。そのまま表示してよい
+  code: ErrorCode;
 };
 
 export type DeltaEventData = {

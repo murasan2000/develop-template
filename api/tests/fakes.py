@@ -10,6 +10,21 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 
+class AgentInvocationErrorStub(Exception):
+    """`app.services.agents.AgentInvocationError` 相当のダミー例外。
+
+    本物のクラスは並行実装中でまだ存在しない可能性があるため import せず、
+    契約どおりの `code`/`message` 属性だけを持たせる。`app/utils/errors.py`
+    は具象クラスを見ず属性の有無だけで判定するので、これで実運用相当の
+    再現になる。
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 class FakeChatAgentRuntime:
     """`ChatAgentRuntime` を構造的に満たすフェイク実装。"""
 

@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # Gemini のモデル名。エージェント層（agents/）へそのまま渡す。
     gemini_model: str = "gemini-3.8-flash"
 
+    # 503（モデル混雑）等を ADK 側でリトライさせる回数の上限。ADK の
+    # `Agent.retry_config` を設定しないと 503 が一切リトライされないため、
+    # エージェント層の `create_chat_runtime(..., max_retry_attempts=...)` へ
+    # そのまま渡す。ここに来た例外は「ADK がリトライを使い切った後」の意味に
+    # なるので、API 層側で追加のリトライは行わない（二重リトライを避ける）。
+    agent_retry_max_attempts: int = 3
+
     # カンマ区切りの文字列で受け取り、list[str] に変換して CORS ミドルウェアへ渡す。
     cors_origins: str = "http://localhost:5173"
 

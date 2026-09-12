@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
@@ -34,11 +35,15 @@ from app.types.api import (
     ConversationOut,
     CreateConversationRequest,
     DoneEventPayload,
+    ErrorEventPayload,
     HealthResponse,
     MessageOut,
     SendMessageRequest,
 )
+from app.utils.errors import to_user_facing_error
 from app.utils.sse import format_sse
+
+logger = logging.getLogger(__name__)
 
 # エージェント層 (`app/services/agents/`) が提供するはずのファクトリのシグネチャ。
 # `docs/api-contract.md` の契約をこちら側の型として持つ（実装未完でも型チェックが
@@ -88,6 +93,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database_url=settings.database_url,
         model=settings.gemini_model,
         app_name="chat-template",
+        # ADK は `Agent.retry_config` を設定しないと 503（モデル混雑）等を
+        # 一切リトライしない。ここに例外が届く時点で「ADK がリトライを使い
+        # 切った後」の意味になるため、API 層側では追加のリトライをしない
+        # （二重リトライを避ける）。
+        max_retry_attempts=settings.agent_retry_max_attempts,
     )
 
     app.state.app_state = AppState(
@@ -285,7 +295,19 @@ async def send_message(
                 await _persist_assistant_reply(
                     session_factory, conversation_id, collected, new_title
                 )
-            yield format_sse("error", {"message": str(exc)})
+            # プロバイダの生ペイロード（Gemini の 503 の JSON 文字列等）を
+            # そのまま画面に流すのはテンプレートとして不適切なので、必ず
+            # 定型文に変換する。原因調査に要る詳細（例外の型・元の文字列）は
+            # 捨てずにここでログへ残す（プロンプト全文・応答全文は出さない）。
+            logger.warning(
+                "agent invocation failed: conversation_id=%s exc_type=%s detail=%s",
+                conversation_id,
+                type(exc).__name__,
+                exc,
+            )
+            error_code, error_message = to_user_facing_error(exc)
+            error_payload = ErrorEventPayload(message=error_message, code=error_code)
+            yield format_sse("error", error_payload.model_dump(mode="json"))
             return
 
         assistant_message, final_title = await _persist_assistant_reply(

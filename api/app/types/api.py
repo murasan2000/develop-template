@@ -14,6 +14,11 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 Role = Literal["user", "assistant"]
 
+# クライアントが「再送を勧めるか」を判断するための機械可読コード。
+# `model_overloaded`/`rate_limited` は再送で直る見込みがあるが、
+# `model_unavailable`（設定不備）は再送しても無駄、`internal` はそれ以外。
+ErrorCode = Literal["model_overloaded", "rate_limited", "model_unavailable", "internal"]
+
 
 def _ensure_utc(value: datetime) -> datetime:
     """naive な datetime は UTC とみなし、常に tz-aware な UTC に揃える。
@@ -114,6 +119,12 @@ class DeltaEventPayload(BaseModel):
 
 
 class ErrorEventPayload(BaseModel):
-    """SSE `error` イベントの data。"""
+    """SSE `error` イベントの data。
+
+    `message` はそのまま画面に出せる日本語（プロバイダの生ペイロードを含めない）。
+    `code` はクライアントが再送を勧めるかどうかの判断材料
+    （`app/utils/errors.py::to_user_facing_error` が変換する）。
+    """
 
     message: str
+    code: ErrorCode

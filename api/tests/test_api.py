@@ -13,7 +13,7 @@ from app.types.api import SendMessageRequest
 from httpx import AsyncClient
 
 from tests.conftest import make_client
-from tests.fakes import FakeChatAgentRuntime
+from tests.fakes import AgentInvocationErrorStub, FakeChatAgentRuntime
 from tests.sse_helpers import parse_sse_events
 
 
@@ -241,11 +241,54 @@ async def test_send_message_error_mid_stream_saves_partial_reply(tmp_path: Path)
         assert event_names[-1] == "error"
         assert "done" not in event_names
 
+        # 素性の分からない例外は "internal" に落ち、元の例外メッセージは
+        # そのまま画面に出さない（生の詳細はログ側の責務）。
         error_event = events[-1][1]
-        assert "agent boom" in error_event["message"]
+        assert error_event["code"] == "internal"
+        assert "agent boom" not in error_event["message"]
 
         # 部分的に受け取れたテキストは履歴として残る（欠けない）。
         detail_res = await client.get(f"/api/conversations/{conversation_id}")
         detail = detail_res.json()
         assert [m["role"] for m in detail["messages"]] == ["user", "assistant"]
         assert detail["messages"][1]["content"] == "途中まで応答した"
+
+
+async def test_send_message_model_overloaded_error_hides_raw_provider_payload(
+    tmp_path: Path,
+) -> None:
+    """Gemini の 503（モデル混雑）が、生ペイロードを含まない定型文に変換されること。"""
+    raw_provider_payload = (
+        "UNAVAILABLE: 503 UNAVAILABLE. {'error': {'code': 503, "
+        "'message': 'This model is currently experiencing high demand. "
+        "Spikes in demand are usually temporary. Please try again later.', "
+        "'status': 'UNAVAILABLE'}}"
+    )
+    runtime = FakeChatAgentRuntime(
+        fail_with=AgentInvocationErrorStub(code="UNAVAILABLE", message=raw_provider_payload),
+    )
+    async with make_client(tmp_path, runtime=runtime) as (client, _state):
+        create_res = await client.post("/api/conversations", json={})
+        conversation_id = create_res.json()["id"]
+
+        async with client.stream(
+            "POST",
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "混み合っている時に送る"},
+        ) as response:
+            assert response.status_code == 200
+            raw = await response.aread()
+
+        raw_text = raw.decode("utf-8")
+        # 生の 503 ペイロードがレスポンスのどこにも含まれていないこと。
+        assert "{'error'" not in raw_text
+        assert "UNAVAILABLE" not in raw_text
+
+        events = parse_sse_events(raw_text)
+        error_event = events[-1][1]
+        assert error_event == {
+            "message": (
+                "AIモデルが混み合っています。少し時間を置いてからもう一度送信してください。"
+            ),
+            "code": "model_overloaded",
+        }
