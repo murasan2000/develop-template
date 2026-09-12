@@ -1,0 +1,171 @@
+.message {
+  display: flex;
+  gap: 0.7rem;
+  max-width: 46rem;
+  width: 100%;
+}
+
+.message--user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.message--assistant {
+  align-self: flex-start;
+}
+
+.message__avatar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-full);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.message--user .message__avatar {
+  background: var(--accent-gradient);
+  color: var(--accent-contrast);
+}
+
+.message--assistant .message__avatar {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.message__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.message--user .message__body {
+  align-items: flex-end;
+}
+
+.message__meta {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  padding: 0 0.2rem;
+}
+
+.message__bubble {
+  padding: 0.65rem 0.95rem;
+  border-radius: var(--radius-lg);
+  line-height: 1.65;
+  word-break: break-word;
+}
+
+.message--user .message__bubble {
+  background: var(--accent-gradient);
+  color: var(--accent-contrast);
+  border-bottom-right-radius: var(--radius-xs);
+}
+
+.message--assistant .message__bubble {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: var(--radius-xs);
+}
+
+.message__text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* --- Markdown 本文の整形 ----------------------------------------------------- */
+.message__markdown {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+}
+
+.message__markdown > *:first-child {
+  margin-top: 0;
+}
+.message__markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.message__markdown p {
+  margin: 0;
+}
+
+.message__markdown pre {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 0.75em 0.9em;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+
+.message__markdown code {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 0.15em 0.4em;
+  border-radius: 0.3em;
+  font-size: 0.88em;
+}
+
+.message__markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.message__markdown ul,
+.message__markdown ol {
+  margin: 0;
+  padding-left: 1.4em;
+}
+
+.message__markdown table {
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.message__markdown th,
+.message__markdown td {
+  border: 1px solid var(--border);
+  padding: 0.35em 0.6em;
+}
+
+.message__markdown a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* --- ストリーミング中の点滅カーソル ----------------------------------------- */
+.message__cursor {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 0.15em;
+  vertical-align: text-bottom;
+  background: currentColor;
+  animation: cursor-blink 1s step-start infinite;
+}
+
+@keyframes cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message__cursor {
+    animation: none;
+    opacity: 0.6;
+  }
+}

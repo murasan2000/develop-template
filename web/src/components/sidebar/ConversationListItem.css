@@ -1,0 +1,76 @@
+.conversation-item {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-radius: var(--radius-md);
+}
+
+.conversation-item__button {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  min-width: 0;
+  padding: 0.6rem 0.7rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s ease;
+}
+
+.conversation-item__title {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.conversation-item__time {
+  font-size: 0.7rem;
+  color: var(--text-faint);
+}
+
+.conversation-item:hover .conversation-item__button {
+  background: var(--surface-hover);
+}
+
+.conversation-item--active .conversation-item__button {
+  background: var(--surface-active);
+}
+
+.conversation-item--active .conversation-item__title {
+  color: var(--accent-solid);
+  font-weight: 600;
+}
+
+.conversation-item__delete {
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  width: 1.9rem;
+  height: 1.9rem;
+  transition:
+    opacity 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.conversation-item:hover .conversation-item__delete,
+.conversation-item__delete:focus-visible {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-item__button,
+  .conversation-item__delete {
+    transition: none;
+  }
+}

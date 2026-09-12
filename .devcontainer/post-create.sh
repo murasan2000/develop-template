@@ -27,27 +27,39 @@ if [ -d .git ]; then
   fi
 fi
 
+# Manifests are looked for in the repository root AND one level down, because a
+# project often keeps its backend and frontend in sibling directories (api/ +
+# web/) rather than at the root. Without this, opening such a repo in the
+# container leaves it with no .venv and no node_modules.
+PROJECT_DIRS=(. */)
+
 # --- Python project ----------------------------------------------------------
-if [ -f pyproject.toml ]; then
-  log "pyproject.toml found - running uv sync"
-  uv sync --all-groups || warn "uv sync failed"
-elif [ -f requirements.txt ]; then
-  log "requirements.txt found - creating .venv"
-  if uv venv; then
-    uv pip install -r requirements.txt || warn "pip install failed"
-  else
-    warn "uv venv failed"
+for dir in "${PROJECT_DIRS[@]}"; do
+  [ -d "$dir" ] || continue
+  if [ -f "$dir/pyproject.toml" ]; then
+    log "${dir}pyproject.toml found - running uv sync"
+    (cd "$dir" && uv sync --all-groups) || warn "uv sync failed in $dir"
+  elif [ -f "$dir/requirements.txt" ]; then
+    log "${dir}requirements.txt found - creating .venv"
+    if (cd "$dir" && uv venv); then
+      (cd "$dir" && uv pip install -r requirements.txt) || warn "pip install failed in $dir"
+    else
+      warn "uv venv failed in $dir"
+    fi
   fi
-fi
+done
 
 # --- Node project ------------------------------------------------------------
-if [ -f package-lock.json ]; then
-  log "package-lock.json found - running npm ci"
-  npm ci || warn "npm ci failed"
-elif [ -f package.json ]; then
-  log "package.json found - running npm install"
-  npm install || warn "npm install failed"
-fi
+for dir in "${PROJECT_DIRS[@]}"; do
+  [ -d "$dir" ] || continue
+  if [ -f "$dir/package-lock.json" ]; then
+    log "${dir}package-lock.json found - running npm ci"
+    (cd "$dir" && npm ci) || warn "npm ci failed in $dir"
+  elif [ -f "$dir/package.json" ]; then
+    log "${dir}package.json found - running npm install"
+    (cd "$dir" && npm install) || warn "npm install failed in $dir"
+  fi
+done
 
 # --- Terraform ---------------------------------------------------------------
 if compgen -G "*.tf" >/dev/null || [ -d terraform ]; then

@@ -1,0 +1,33 @@
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1rem;
+  background: var(--danger-surface);
+  color: var(--danger);
+  border-bottom: 1px solid var(--danger-border);
+  font-size: 0.875rem;
+}
+
+.error-banner__message {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.error-banner__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.error-banner__close:hover {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
