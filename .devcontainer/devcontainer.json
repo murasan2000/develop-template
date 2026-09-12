@@ -1,16 +1,13 @@
 {
-  // Dev container for THIS repository, which is where the image is developed.
-  // It builds from the Dockerfile so changes are picked up immediately.
-  //
-  // Projects derived from this template should NOT copy this file. They pull
-  // the prebuilt image from GHCR instead - see templates/devcontainer/
-  // devcontainer.json for the config to copy, and README.md for the rationale.
+  // Dev container definition. Copy this whole directory into a project and
+  // change `name`; from then on the project owns it and edits it in place.
   "name": "Develop Template",
 
   "build": {
     "dockerfile": "Dockerfile",
-    // Repository root, so the Dockerfile can bake the shared lint configs in.
-    "context": "..",
+    // Only the Dockerfile is needed to build, so the context stays this
+    // directory. Change it to ".." if a COPY needs files from the project root.
+    "context": ".",
     // Toolchain versions.
     //
     // Each value falls back to the default below, but can be overridden from the
@@ -18,8 +15,8 @@
     //
     //   NODE_VERSION=20 PYTHON_VERSION=3.12 devcontainer up --workspace-folder .
     //
-    // In a derived project, prefer replacing the defaults here so the version is
-    // committed with the repository.
+    // Prefer editing the defaults here, so the versions are committed with the
+    // project rather than living in someone's shell.
     "args": {
       "TZ": "${localEnv:TZ:Asia/Tokyo}",
       "NODE_VERSION": "${localEnv:NODE_VERSION:22}",
@@ -93,6 +90,7 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
 
-  "postCreateCommand": "devcontainer-post-create",
+  // Run from the workspace, so editing it does not require an image rebuild.
+  "postCreateCommand": ".devcontainer/post-create.sh",
   "waitFor": "postCreateCommand"
 }

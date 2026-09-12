@@ -2,9 +2,10 @@
 #
 # Runs once after the dev container is created (postCreateCommand).
 #
-# Everything here is optional and detected from the workspace, so the same
-# script works for an empty template checkout and for any project derived
-# from it. A failure in one step must not abort container creation.
+# Everything here is detected from the workspace, so the same script works for
+# an empty checkout and for a project that uses only part of the toolchain.
+# A failure in one step must not abort container creation - one project's
+# quirk should never make the container unopenable.
 set -uo pipefail
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -12,38 +13,8 @@ warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 
 cd "${WORKSPACE_FOLDER:-/workspace}" || exit 0
 
-# --- runtime toolchain overrides ---------------------------------------------
-#
-# When the image is consumed prebuilt from a registry, Node is fixed by the
-# image tag, but Python and Terraform can still be switched here. Set
-# PYTHON_VERSION / TERRAFORM_VERSION in devcontainer.json's `containerEnv`.
-# Both are no-ops when the requested version is already the one in the image.
-
-if [ -n "${PYTHON_VERSION:-}" ]; then
-  current_python="$(python --version 2>/dev/null | awk '{print $2}')"
-  case "$current_python" in
-    "${PYTHON_VERSION}" | "${PYTHON_VERSION}".*) ;;
-    *)
-      log "switching Python ${current_python:-none} -> ${PYTHON_VERSION}"
-      uv python install --default "$PYTHON_VERSION" || warn "Python switch failed"
-      ;;
-  esac
-fi
-
-if [ -n "${TERRAFORM_VERSION:-}" ]; then
-  current_tf="$(terraform version -json 2>/dev/null | jq -r .terraform_version 2>/dev/null)"
-  if [ "$current_tf" != "$TERRAFORM_VERSION" ]; then
-    log "switching Terraform ${current_tf:-none} -> ${TERRAFORM_VERSION}"
-    tf_arch="$(dpkg --print-architecture)"
-    tf_url="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${tf_arch}.zip"
-    if curl -fsSL -o /tmp/terraform.zip "$tf_url"; then
-      # /opt/devtemplate/bin precedes the baked-in binary on PATH.
-      unzip -qo -d /opt/devtemplate/bin /tmp/terraform.zip && rm -f /tmp/terraform.zip
-    else
-      warn "could not download Terraform ${TERRAFORM_VERSION}"
-    fi
-  fi
-fi
+# Toolchain versions come from the Dockerfile's build args, not from here:
+# this container is built per project, so there is exactly one place to set them.
 
 # --- git ---------------------------------------------------------------------
 if [ -d .git ]; then
@@ -90,7 +61,7 @@ if [ -f .pre-commit-config.yaml ] && [ -d .git ]; then
 fi
 
 if [ ! -f .pre-commit-config.yaml ] && [ ! -f ruff.toml ]; then
-  log "no shared lint config found - run 'devtemplate-init' to copy the template defaults"
+  log "no lint config found - copy the ones from the develop-template repository root"
 fi
 
 # --- summary -----------------------------------------------------------------
