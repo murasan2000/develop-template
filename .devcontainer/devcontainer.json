@@ -1,11 +1,16 @@
 {
-  // Base dev container for projects derived from this template.
-  // Rename `name` in the derived repository.
+  // Dev container for THIS repository, which is where the image is developed.
+  // It builds from the Dockerfile so changes are picked up immediately.
+  //
+  // Projects derived from this template should NOT copy this file. They pull
+  // the prebuilt image from GHCR instead - see templates/devcontainer/
+  // devcontainer.json for the config to copy, and README.md for the rationale.
   "name": "Develop Template",
 
   "build": {
     "dockerfile": "Dockerfile",
-    "context": ".",
+    // Repository root, so the Dockerfile can bake the shared lint configs in.
+    "context": "..",
     // Toolchain versions.
     //
     // Each value falls back to the default below, but can be overridden from the
@@ -88,6 +93,6 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
 
-  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postCreateCommand": "devcontainer-post-create",
   "waitFor": "postCreateCommand"
 }

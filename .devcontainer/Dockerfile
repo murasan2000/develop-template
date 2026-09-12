@@ -129,10 +129,16 @@ RUN ARCH="$(dpkg --print-architecture)" && \
 # uv itself, the managed CPython build and uv-installed tools all live outside
 # $HOME so they survive a bind-mounted home and are shared by every user.
 # ---------------------------------------------------------------------------
+# The uv-managed interpreter, its shims and uv-installed tools all live under
+# /opt/uv rather than in $HOME, and /opt/uv/bin comes first on PATH. Because
+# that tree is writable by the container user (see the User setup section), the
+# Python version can also be switched at *runtime* - which is what lets one
+# prebuilt image serve projects that need different Python versions.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
-  UV_PYTHON_BIN_DIR=/usr/local/bin \
+  UV_PYTHON_BIN_DIR=/opt/uv/bin \
   UV_TOOL_DIR=/opt/uv/tools \
-  UV_TOOL_BIN_DIR=/usr/local/bin
+  UV_TOOL_BIN_DIR=/opt/uv/bin \
+  PATH=/opt/devtemplate/bin:/opt/uv/bin:$PATH
 
 RUN curl -LsSf https://astral.sh/uv/install.sh \
     | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh && \
@@ -140,14 +146,12 @@ RUN curl -LsSf https://astral.sh/uv/install.sh \
 
 # `--default` also creates the bare `python` / `python3` shims in UV_PYTHON_BIN_DIR.
 RUN uv python install --default "${PYTHON_VERSION}" && \
-  python --version && \
-  chmod -R a+rX /opt/uv
+  python --version
 
 # Python-based lint / hook tooling, each in its own isolated environment.
 RUN uv tool install --python "${PYTHON_VERSION}" pre-commit && \
   uv tool install --python "${PYTHON_VERSION}" ruff && \
-  uv tool install --python "${PYTHON_VERSION}" yamllint && \
-  chmod -R a+rX /opt/uv
+  uv tool install --python "${PYTHON_VERSION}" yamllint
 
 # ---------------------------------------------------------------------------
 # User setup
@@ -168,6 +172,12 @@ RUN usermod -l ${USERNAME} -d /home/${USERNAME} -m node && \
 RUN mkdir -p /usr/local/share/npm-global/lib/node_modules && \
   chown -R ${USERNAME}:${USERNAME} /usr/local/share && \
   ln -s /usr/local/share/npm-global/lib/node_modules /node_modules
+
+# /opt/uv and /opt/devtemplate/bin are owned by the container user so that
+# `uv python install`, `uv tool install` and the runtime Terraform switch in
+# post-create.sh all work without sudo.
+RUN mkdir -p /opt/devtemplate/bin /opt/devtemplate/templates && \
+  chown -R ${USERNAME}:${USERNAME} /opt/uv /opt/devtemplate
 
 # Persist shell history across container rebuilds (see the mount in devcontainer.json).
 RUN mkdir -p /commandhistory && \
@@ -192,7 +202,7 @@ RUN mkdir -p \
 # sources it), which would drop the npm global bin dir set below. Re-add it for
 # every shell flavour.
 RUN printf '%s\n' \
-    'export PATH="/usr/local/share/npm-global/bin:$HOME/.local/bin:$PATH"' \
+    'export PATH="/opt/devtemplate/bin:/opt/uv/bin:/usr/local/share/npm-global/bin:$HOME/.local/bin:$PATH"' \
     > /etc/profile.d/10-devcontainer-path.sh && \
   chmod 0644 /etc/profile.d/10-devcontainer-path.sh
 
@@ -239,3 +249,30 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
 # Same history persistence for bash.
 RUN echo "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   >> /home/${USERNAME}/.bashrc
+
+# ---------------------------------------------------------------------------
+# Baked-in template assets
+#
+# These are last so that editing them does not invalidate any expensive layer.
+#
+# Shipping the post-create script and the shared lint configs *inside* the image
+# is what makes the published image self-contained: a derived project only needs
+# a devcontainer.json pointing at the image, with no other files copied over.
+# ---------------------------------------------------------------------------
+COPY --chown=${USERNAME}:${USERNAME} .devcontainer/post-create.sh /opt/devtemplate/bin/devcontainer-post-create
+
+COPY --chown=${USERNAME}:${USERNAME} \
+  .editorconfig \
+  .pre-commit-config.yaml \
+  .prettierignore \
+  .prettierrc.json \
+  .yamllint.yaml \
+  eslint.config.mjs \
+  ruff.toml \
+  /opt/devtemplate/templates/
+
+# `devtemplate-init` copies any of the shared configs that the project does not
+# already have into the workspace. Opt-in: nothing is written automatically.
+COPY --chown=${USERNAME}:${USERNAME} .devcontainer/devtemplate-init.sh /opt/devtemplate/bin/devtemplate-init
+
+RUN chmod 0755 /opt/devtemplate/bin/devcontainer-post-create /opt/devtemplate/bin/devtemplate-init

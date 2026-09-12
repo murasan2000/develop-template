@@ -1,0 +1,17 @@
+# The build context is the repository root so the Dockerfile can bake in the
+# shared lint configs. Keep everything else out of the context.
+.git/
+.github/
+node_modules/
+.venv/
+__pycache__/
+.ruff_cache/
+.pytest_cache/
+.terraform/
+dist/
+build/
+coverage/
+templates/
+**/README.md
+*.log
+.DS_Store

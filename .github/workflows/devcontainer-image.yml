@@ -1,0 +1,160 @@
+name: devcontainer image
+
+# Builds the dev container image and publishes it to GHCR.
+#
+# Tags: one per Node version. Node is baked into the base image and cannot be
+# changed at runtime, so it drives the tag matrix. Python and Terraform are
+# switchable at container-create time via containerEnv (see post-create.sh),
+# so they deliberately do NOT multiply the matrix.
+#
+# Architectures: linux/amd64 and linux/arm64 are each built on a native runner
+# and then joined into one manifest list. QEMU emulation is avoided on purpose -
+# emulating the apt/azure-cli/CPython work in this image takes the better part
+# of an hour. `ubuntu-24.04-arm` is free for public repositories; on a private
+# repository it requires a paid plan (swap in a self-hosted arm64 runner, or
+# drop the arm64 leg and accept emulation on Apple Silicon).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".devcontainer/**"
+      # Documentation is excluded from the build context (.dockerignore),
+      # so a docs-only edit must not trigger a 6-leg image rebuild.
+      - "!.devcontainer/README.md"
+      - ".dockerignore"
+      - ".editorconfig"
+      - ".pre-commit-config.yaml"
+      - ".prettierignore"
+      - ".prettierrc.json"
+      - ".yamllint.yaml"
+      - "eslint.config.mjs"
+      - "ruff.toml"
+      - ".github/workflows/devcontainer-image.yml"
+  # Weekly rebuild so OS and cloud CLI security updates land in the image.
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/devcontainer
+  PYTHON_VERSION: "3.13"
+
+concurrency:
+  group: devcontainer-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build node${{ matrix.node }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22", "24"]
+        platform: [linux/amd64, linux/arm64]
+        # `platform` is a real matrix axis above, so these entries only attach
+        # arch/runner to the matching combinations instead of overwriting.
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build without tags and push by digest; the merge job assembles the
+      # manifest list that the tags actually point at.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .devcontainer/Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            NODE_VERSION=${{ matrix.node }}
+            PYTHON_VERSION=${{ env.PYTHON_VERSION }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-node${{ matrix.node }}-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-node${{ matrix.node }}-${{ matrix.arch }},mode=max
+          provenance: false
+
+      - name: export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          # Strip the algorithm prefix; it is re-added when the manifest is built.
+          touch "/tmp/digests/${digest#sha256:}"
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-node${{ matrix.node }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: publish node${{ matrix.node }}
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22", "24"]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-node${{ matrix.node }}-*
+          merge-multiple: true
+          path: /tmp/digests
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=node${{ matrix.node }}
+            type=raw,value=node${{ matrix.node }}-{{date 'YYYYMMDD'}}
+            type=raw,value=latest,enable=${{ matrix.node == '22' }}
+          labels: |
+            org.opencontainers.image.title=develop-template devcontainer
+            org.opencontainers.image.description=Node ${{ matrix.node }} / Python ${{ env.PYTHON_VERSION }} with gcloud, az, aws, terraform and lint tooling
+
+      - name: create manifest list
+        working-directory: /tmp/digests
+        run: |
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: inspect
+        run: |
+          docker buildx imagetools inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:node${{ matrix.node }}"

@@ -37,7 +37,7 @@ repos:
         # devcontainer.json and VS Code's settings are JSONC (comments allowed).
         exclude: |
           (?x)^(
-            \.devcontainer/devcontainer\.json|
+            (.*/)?devcontainer\.json|
             \.vscode/.*\.json
           )$
       - id: check-toml
