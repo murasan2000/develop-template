@@ -1,0 +1,10 @@
+node_modules/
+.venv/
+dist/
+build/
+coverage/
+.terraform/
+*.tfstate*
+package-lock.json
+uv.lock
+CHANGELOG.md

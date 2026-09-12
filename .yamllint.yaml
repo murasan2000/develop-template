@@ -1,0 +1,15 @@
+extends: default
+
+ignore: |
+  .venv/
+  node_modules/
+  .terraform/
+
+rules:
+  # Prettier formats YAML; do not fight it over line length or comment spacing.
+  line-length: disable
+  comments:
+    min-spaces-from-content: 1
+  truthy:
+    check-keys: false
+  document-start: disable

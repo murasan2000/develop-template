@@ -1,0 +1,93 @@
+{
+  // Base dev container for projects derived from this template.
+  // Rename `name` in the derived repository.
+  "name": "Develop Template",
+
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".",
+    // Toolchain versions.
+    //
+    // Each value falls back to the default below, but can be overridden from the
+    // host environment without editing this file, e.g.:
+    //
+    //   NODE_VERSION=20 PYTHON_VERSION=3.12 devcontainer up --workspace-folder .
+    //
+    // In a derived project, prefer replacing the defaults here so the version is
+    // committed with the repository.
+    "args": {
+      "TZ": "${localEnv:TZ:Asia/Tokyo}",
+      "NODE_VERSION": "${localEnv:NODE_VERSION:22}",
+      "PYTHON_VERSION": "${localEnv:PYTHON_VERSION:3.13}",
+      "DEBIAN_VARIANT": "${localEnv:DEBIAN_VARIANT:bookworm}",
+      "TERRAFORM_VERSION": "${localEnv:TERRAFORM_VERSION:1.16.2}",
+      "CLAUDE_CODE_VERSION": "${localEnv:CLAUDE_CODE_VERSION:latest}",
+      "GIT_DELTA_VERSION": "0.18.2",
+      "ZSH_IN_DOCKER_VERSION": "1.2.0"
+    }
+  },
+
+  // NET_ADMIN / NET_RAW are only needed if the project adds an egress firewall
+  // init script. Drop them if it does not.
+  "runArgs": ["--cap-add=NET_ADMIN", "--cap-add=NET_RAW"],
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "eamodio.gitlens",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "hashicorp.terraform",
+        "redhat.vscode-yaml",
+        "ms-azuretools.vscode-docker",
+        "timonwong.shellcheck",
+        "editorconfig.editorconfig"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": "explicit",
+          "source.organizeImports.ruff": "explicit"
+        },
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.profiles.linux": {
+          "bash": { "path": "bash", "icon": "terminal-bash" },
+          "zsh": { "path": "zsh" }
+        }
+      }
+    }
+  },
+
+  "remoteUser": "developer",
+
+  "mounts": [
+    // Shell history survives rebuilds.
+    "source=devcontainer-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
+    // Named volumes for cloud credentials: `gcloud auth login` / `az login`
+    // only have to be done once per project.
+    "source=devcontainer-gcloud-${devcontainerId},target=/home/developer/.config/gcloud,type=volume",
+    "source=devcontainer-azure-${devcontainerId},target=/home/developer/.azure,type=volume",
+    // Reuse the host's Claude Code configuration.
+    "source=${localEnv:HOME}/.claude,target=/home/developer/.claude,type=bind"
+  ],
+
+  "containerEnv": {
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "CLAUDE_CONFIG_DIR": "/home/developer/.claude",
+    "POWERLEVEL9K_DISABLE_GITSTATUS": "true"
+  },
+
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "workspaceFolder": "/workspace",
+
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "waitFor": "postCreateCommand"
+}

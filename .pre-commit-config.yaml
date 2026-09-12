@@ -1,0 +1,106 @@
+# Shared pre-commit baseline for projects derived from this template.
+#
+#   pre-commit install            # once per clone (done by post-create.sh)
+#   pre-commit run --all-files    # run everything
+#   pre-commit autoupdate         # bump the revs below
+#
+# Language-specific hooks are scoped by `files`/`types`, so a hook simply does
+# not run until the project actually contains that kind of file.
+minimum_pre_commit_version: "3.5.0"
+
+exclude: |
+  (?x)^(
+    \.venv/|
+    node_modules/|
+    .*/\.terraform/|
+    .*\.lock$|
+    package-lock\.json$
+  )
+
+repos:
+  # --- generic hygiene -------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-case-conflict
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+        # devcontainer.json and VS Code's settings are JSONC (comments allowed).
+        exclude: |
+          (?x)^(
+            \.devcontainer/devcontainer\.json|
+            \.vscode/.*\.json
+          )$
+      - id: check-toml
+      - id: check-executables-have-shebangs
+      - id: detect-private-key
+
+  # --- secrets ---------------------------------------------------------------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # --- Python ----------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # --- JS / TS / JSON / YAML / Markdown formatting ---------------------------
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.9.6
+    hooks:
+      - id: prettier
+        types_or: [javascript, jsx, ts, tsx, json, yaml, markdown, css, scss, html]
+
+  # --- JS / TS linting -------------------------------------------------------
+  # Uses the eslint on PATH (installed globally in the dev container) so the
+  # project's own config and plugins are honoured. Only runs once the repo
+  # actually contains JS/TS sources.
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint
+        entry: eslint --fix --no-warn-ignored
+        language: system
+        types_or: [javascript, jsx, ts, tsx]
+        require_serial: false
+
+  # --- Terraform -------------------------------------------------------------
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.109.1
+    hooks:
+      - id: terraform_fmt
+      # Requires `terraform init` in each module first; enable once the
+      # project's Terraform layout is settled.
+      # - id: terraform_validate
+
+  # --- Shell -----------------------------------------------------------------
+  # The upstream shellcheck hook runs as a docker_image, which is not available
+  # inside the dev container; use the shellcheck binary installed in the image.
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        types: [shell]
+
+  # --- YAML ------------------------------------------------------------------
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [--strict]
