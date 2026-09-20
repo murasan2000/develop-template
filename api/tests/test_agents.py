@@ -15,6 +15,7 @@ from typing import Any, cast
 
 import pytest
 from app.services.agents import AgentInvocationError, ChatAgentRuntime, create_chat_runtime
+from app.services.agents.attachments import AgentAttachment, build_user_parts, is_inlinable
 from app.services.agents.chat import _build_retry_config
 from app.services.agents.tools import get_current_time
 from google.adk import Agent, Runner
@@ -200,6 +201,103 @@ async def test_stream_reply_passes_ids_through_to_runner() -> None:
 
     assert fake_runner.received_kwargs["session_id"] == "conv-42"
     assert fake_runner.received_kwargs["user_id"] == "user-42"
+
+
+def _attachment(
+    *, filename: str = "file.bin", mime_type: str = "application/octet-stream", data: bytes = b"x"
+) -> AgentAttachment:
+    return AgentAttachment(filename=filename, mime_type=mime_type, size_bytes=len(data), data=data)
+
+
+def test_is_inlinable_accepts_image_text_and_pdf() -> None:
+    """`image/*` / `text/*` / `application/pdf` は inline 可能と判定されること。"""
+    assert is_inlinable("image/png") is True
+    assert is_inlinable("image/jpeg") is True
+    assert is_inlinable("text/plain") is True
+    assert is_inlinable("text/markdown") is True
+    assert is_inlinable("application/pdf") is True
+
+
+def test_is_inlinable_rejects_zip_and_json() -> None:
+    """`application/zip` / `application/json` は inline 不可と判定されること。"""
+    assert is_inlinable("application/zip") is False
+    assert is_inlinable("application/json") is False
+
+
+def test_build_user_parts_without_attachments_matches_legacy_shape() -> None:
+    """添付なしの従来呼び出しは `[Part(text=...)]` 1 個のままであること（回帰テスト）。"""
+    parts = build_user_parts("こんにちは", [])
+
+    assert len(parts) == 1
+    assert parts[0].text == "こんにちは"
+    assert parts[0].inline_data is None
+
+
+def test_build_user_parts_inlines_supported_mime_with_label_before_it() -> None:
+    """対応形式の添付はラベルの text パートの直後に inline パートが置かれること。"""
+    attachment = _attachment(filename="cat.png", mime_type="image/png", data=b"\x89PNG...")
+    parts = build_user_parts("これは何？", [attachment])
+
+    assert len(parts) == 3
+    assert parts[0].text == "[添付ファイル: cat.png（image/png）]"
+    assert parts[0].inline_data is None
+    assert parts[1].inline_data is not None
+    assert parts[1].inline_data.mime_type == "image/png"
+    assert parts[1].inline_data.data == b"\x89PNG..."
+    assert parts[2].text == "これは何？"
+
+
+def test_build_user_parts_uses_note_for_unsupported_mime() -> None:
+    """非対応形式の添付は inline にならず、ファイル名とサイズを含む text パートだけになること。"""
+    attachment = _attachment(
+        filename="archive.zip", mime_type="application/zip", data=b"PK\x03\x04"
+    )
+    parts = build_user_parts("これ開ける？", [attachment])
+
+    assert len(parts) == 2
+    assert parts[0].inline_data is None
+    assert "archive.zip" in (parts[0].text or "")
+    assert "application/zip" in (parts[0].text or "")
+    assert str(len(b"PK\x03\x04")) in (parts[0].text or "")
+    assert parts[1].text == "これ開ける？"
+
+
+def test_build_user_parts_keeps_order_and_puts_body_text_last() -> None:
+    """複数添付の順序が保たれ、本文テキストが最後に来ること。"""
+    png = _attachment(filename="a.png", mime_type="image/png", data=b"a")
+    zip_file = _attachment(filename="b.zip", mime_type="application/zip", data=b"bb")
+    parts = build_user_parts("本文", [png, zip_file])
+
+    # png: ラベル + inline の 2 パート、zip: 注記の 1 パート、最後に本文。
+    assert len(parts) == 4
+    assert parts[0].text == "[添付ファイル: a.png（image/png）]"
+    assert parts[1].inline_data is not None
+    assert "b.zip" in (parts[2].text or "")
+    assert parts[3].text == "本文"
+
+
+def test_build_user_parts_omits_empty_body_text_part() -> None:
+    """本文が空文字のときは空の text パートが作られないこと。"""
+    attachment = _attachment(filename="a.png", mime_type="image/png", data=b"a")
+    parts = build_user_parts("", [attachment])
+
+    assert len(parts) == 2
+    assert parts[-1].inline_data is not None
+
+
+async def test_stream_reply_passes_attachments_into_new_message() -> None:
+    """`stream_reply` に渡した添付が `run_async` の `new_message` に反映されること。"""
+    fake_runner = _FakeRunner([])
+    runtime = _build_runtime(fake_runner, _FakeSessionService())
+    attachment = _attachment(filename="a.png", mime_type="image/png", data=b"a")
+
+    async for _ in runtime.stream_reply("conv-1", "user-1", "本文", [attachment]):
+        pass
+
+    new_message = fake_runner.received_kwargs["new_message"]
+    assert new_message.parts[0].text == "[添付ファイル: a.png（image/png）]"
+    assert new_message.parts[1].inline_data is not None
+    assert new_message.parts[2].text == "本文"
 
 
 async def test_ensure_session_is_idempotent() -> None:

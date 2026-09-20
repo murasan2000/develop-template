@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 
 from google.adk import Runner
 
@@ -29,6 +29,7 @@ from google.adk.apps import App
 from google.adk.sessions import BaseSessionService, DatabaseSessionService, InMemorySessionService
 from google.genai import types
 
+from app.services.agents.attachments import AgentAttachment, build_user_parts
 from app.services.agents.chat import build_chat_agent
 
 # ADK セッションの `app_name` は、アプリインスタンスの識別子であって
@@ -97,9 +98,22 @@ class ChatAgentRuntime:
             )
 
     async def stream_reply(
-        self, conversation_id: str, user_id: str, text: str
+        self,
+        conversation_id: str,
+        user_id: str,
+        text: str,
+        attachments: Sequence[AgentAttachment] = (),
     ) -> AsyncIterator[str]:
         """ユーザー発言に対する応答を、増分テキストだけ yield する。
+
+        `attachments` はそのターンにだけ渡せばよい（毎ターン送り直す必要はない）。
+        ADK の `SessionService` は `run_async` に渡した `new_message` をイベントと
+        して保持するため、一度送った inline データはそのセッションの文脈に残り
+        続け、モデルは後続のターンでもセッション履歴を通じてそれを参照できる。
+        逆に毎ターン送り直すと、同じバイト列がセッションに何重にも積み上がり、
+        リクエストサイズとコストが線形に膨らんでしまう。入口側（API 層）で
+        添付の件数・サイズに上限を設けることで、蓄積そのものの影響を緩和する
+        方針を取っている（セッション側の剪定はこのテンプレートでは行わない）。
 
         StreamingMode.SSE では、部分テキスト（`partial=True`）を積み重ねた
         「これまでの全文」が最終イベント（`partial` が立っていないイベント）
@@ -144,7 +158,7 @@ class ChatAgentRuntime:
             ためのものではなく、常に何らかの形で例外を送出し直す
             （`raise ... from exc`）ための変換であることに注意。
         """
-        new_message = types.Content(role="user", parts=[types.Part(text=text)])
+        new_message = types.Content(role="user", parts=build_user_parts(text, attachments))
         run_config = RunConfig(streaming_mode=StreamingMode.SSE)
 
         yielded_any = False

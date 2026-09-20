@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from app.services.agents.attachments import AgentAttachment
 from app.services.agents.runtime import AgentInvocationError, ChatAgentRuntime, create_chat_runtime
 
-__all__ = ["AgentInvocationError", "ChatAgentRuntime", "create_chat_runtime"]
+__all__ = ["AgentAttachment", "AgentInvocationError", "ChatAgentRuntime", "create_chat_runtime"]
