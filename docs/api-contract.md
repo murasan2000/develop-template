@@ -15,6 +15,9 @@
 | `GET`    | `/api/conversations/{id}`          | 会話 1 件＋メッセージ全件                   |
 | `DELETE` | `/api/conversations/{id}`          | 会話を削除（メッセージも cascade で削除）   |
 | `POST`   | `/api/conversations/{id}/messages` | ユーザー発言を送り、応答を SSE でストリーム |
+| `POST`   | `/api/files`                       | ファイルを 1 件アップロード（multipart）    |
+| `GET`    | `/api/files/{id}/content`          | ファイル本体をダウンロード                  |
+| `DELETE` | `/api/files/{id}`                  | 未添付ファイルを削除（添付済みは 409）      |
 
 ## スキーマ
 
@@ -28,12 +31,29 @@ type Conversation = {
   updated_at: string;
 };
 
+// ファイル置き場の用途区分。ストレージのレイアウト
+// `storage/<purpose>/<uuid>/<filename>` の第 1 階層に一致する。
+// `generated` は将来のエージェント生成ファイル用の予約で、現時点では
+// API 経由で作られることはない（サーバは常に `uploads` として保存する）。
+type FilePurpose = "uploads" | "generated";
+
+type FileMeta = {
+  id: string; // UUID
+  filename: string; // サニタイズ済みの表示名
+  mime_type: string;
+  size_bytes: number;
+  purpose: FilePurpose;
+  created_at: string; // ISO 8601 (UTC)
+  content_url: string; // 例: "/api/files/<id>/content"
+};
+
 type Message = {
   id: string; // UUID
   conversation_id: string;
   role: Role;
   content: string;
   created_at: string;
+  attachments: FileMeta[]; // 添付が無ければ空配列（null / undefined にはしない）
 };
 
 type ConversationDetail = {
@@ -48,6 +68,11 @@ type HealthResponse = {
 };
 ```
 
+`FileMeta.content_url` はサーバが組み立てて返す。クライアントに
+`/api/files/${id}/content` を組み立てさせない理由は、将来クラウドストレージへ移行して
+署名付き URL を返すようになっても、**サーバがこのフィールドの中身を差し替えるだけで
+フロントエンドが無変更で済む**ようにするため。
+
 リクエストボディ:
 
 ```ts
@@ -55,7 +80,10 @@ type HealthResponse = {
 type CreateConversationRequest = { title?: string | null };
 
 // POST /api/conversations/{id}/messages
-type SendMessageRequest = { content: string };
+type SendMessageRequest = {
+  content: string; // attachment_ids が空でないときに限り空文字を許す
+  attachment_ids?: string[]; // 省略時は [] として扱う
+};
 ```
 
 ## SSE（`POST /api/conversations/{id}/messages`）
@@ -80,6 +108,11 @@ type DoneEvent = Message & { title: string };
 - ストリームの最後には必ず `done` か `error` のどちらか一方だけが流れる。
 - `done` の `title` は**毎ターン必ず入る**（そのターンで題名が変わらなかった場合も、
   現在の題名をそのまま返す）。クライアントは「無いかもしれない」扱いをしなくてよい。
+- **添付機能によって SSE のイベント種別は増えない**。`user` / `done` の data は
+  どちらも `Message` ベースなので `attachments` が必ず入るだけ。assistant メッセージに
+  添付が付くことは現時点では無いため `done` の `attachments` は常に `[]` だが、
+  `Message` の形を role で分岐させるとクライアント側の分岐が増えて壊れやすくなるので
+  省略しない。
 
 ### `error` イベントの中身
 
@@ -119,6 +152,29 @@ type ErrorCode =
 
 FastAPI 既定の `{"detail": "..."}` 形式。存在しない会話は 404。
 
+`POST /api/files`:
+
+| ステータス | 条件                         |
+| ---------- | ---------------------------- |
+| 413        | ファイルサイズが上限を超えた |
+| 415        | 許可されていない MIME タイプ |
+| 400        | ファイルが空（0 バイト）     |
+
+`GET /api/files/{id}/content`: 404（DB に無い / 実体が無い）。
+
+`DELETE /api/files/{id}`: 404（無い） / 409（既にメッセージに添付済み）。
+
+`POST /api/conversations/{id}/messages` は、添付の検証も含めて**すべてストリーム開始前**に
+行う。ストリームを開始した後は HTTP ステータスを変えられないため、ここで弾けるものは
+ここで弾く。
+
+| ステータス | 条件                                                           |
+| ---------- | -------------------------------------------------------------- |
+| 404        | 会話が存在しない / `attachment_ids` に存在しない ID が含まれる |
+| 409        | `attachment_ids` に既に別メッセージへ添付済みの ID が含まれる  |
+| 400        | `content` が空かつ `attachment_ids` も空                       |
+| 400        | 添付の件数上限超過 / 添付の合計サイズ上限超過                  |
+
 ## エージェント層の契約（`app/services/agents/`）
 
 バックエンドはエージェントの内部構造を知らず、以下だけを使う。
@@ -136,12 +192,42 @@ runtime: ChatAgentRuntime = await create_chat_runtime(
 )
 
 await runtime.ensure_session(conversation_id: str, user_id: str) -> None
-runtime.stream_reply(conversation_id: str, user_id: str, text: str) -> AsyncIterator[str]
+runtime.stream_reply(
+    conversation_id: str,
+    user_id: str,
+    text: str,
+    attachments: Sequence[AgentAttachment] = (),   # 既定値つきで追加
+) -> AsyncIterator[str]
 runtime.model_name: str
 await runtime.aclose() -> None
 ```
 
 - `stream_reply` は応答の増分テキストだけを yield する（SSE の `delta` にそのまま載る）。
+- `attachments` はマルチモーダル入力。**バイト列の実体を API 層が `FileStorage` から
+  読み出して渡す**（エージェント層はストレージの存在を知らない）。
+
+```python
+class AgentAttachment(TypedDict):
+    """`stream_reply` にマルチモーダル入力として渡す添付 1 件。"""
+
+    filename: str
+    mime_type: str
+    size_bytes: int
+    data: bytes
+```
+
+- **「この MIME タイプをモデルに読ませられるか」の判断はエージェント層が行う。**
+  モデルの能力に関する知識なので、モデル統合側に置く。読ませられない形式は
+  ファイル名とサイズだけをテキストで伝え、**エラーにはしない**。
+- `AgentAttachment` は backend 側（`app/types/attachments.py`）と agent 側
+  （`app/services/agents/attachments.py`）で**それぞれ宣言する**。`TypedDict` は mypy に
+  おいて構造的に互換なので、同じキー・同じ型なら別モジュールの宣言同士が相互に代入
+  できる。`app/types/agent_runtime.py` が具象を import せず `Protocol` で持っているのと
+  同じ理由（両層を独立して型チェック・並行実装できるようにするため）。
+  **定義を変えるときは必ず両方を同時に変えること。**
+- `attachments` を渡すのは**そのターンだけ**でよい。ADK の `SessionService` が送った
+  パートをイベントとして保持するため、以降のターンで同じファイルを送り直す必要はない
+  （送り直すと同じバイト列が文脈に何重にも積み上がる）。
 - 失敗時は `AgentInvocationError`（`code: str` / `message: str` を持つ）を送出する。
   API 層はこの `code` を見て、上記の `ErrorCode` へ振り分ける。
 - **一時的な失敗の再試行はエージェント層が内部で行う**（ADK の `RetryConfig`）。

@@ -17,6 +17,8 @@ api/    FastAPI バックエンド（Python 3.13 / uv）
   app/services/db/            SQLAlchemy の engine / session / モデル
   app/services/chat/          会話・メッセージの永続化
   app/services/agents/        AI エージェント（Google ADK）
+  app/services/storage/       ファイル実体の読み書き（FileStorage 抽象 + ローカル実装）
+  app/services/files/         ファイルのメタデータ永続化
   app/types/api.py            Pydantic のリクエスト / レスポンス型
   app/utils/                  純粋関数のユーティリティ
   tests/                      pytest（ネットワーク・LLM 非依存）
@@ -28,6 +30,7 @@ web/    React + TypeScript + Vite フロントエンド
 docs/
   api-contract.md             ★ 層の間の契約。3 層に跨る変更はここから始める
   plans/                      task-planner が書く実装計画
+storage/                      ローカルのファイル置き場（実体。git 管理外）
 .devcontainer/                開発コンテナ（詳細は .devcontainer/README.md）
 .claude/                      エージェント・スキル・ガードレール（後述）
 docker-compose.yml            db / api / web をまとめて起動する開発用定義
@@ -150,6 +153,31 @@ npm run dev     # 開発サーバ（:5173、/api を :8000 にプロキシ）
 状態と API 呼び出しは `hooks/useXxx.ts` に閉じ込め、`components/` は表示に専念させる。
 状態管理ライブラリも UI フレームワークも入れない（この規模では依存を増やす理由がない）。
 色は `:root` の CSS カスタムプロパティで管理し、個別 CSS に生の色コードを書かない。
+
+### 7. ファイルの実体は「置き場」に、メタデータだけ DB に
+
+チャットの添付も、将来エージェントが生成するファイルも、同じ 1 つのファイル置き場に
+入れる。**DB に実体（BLOB）を入れない。** `files` テーブルが持つのはメタデータだけで、
+実体は `FileStorage` 越しに読み書きする。
+
+レイアウトは `storage/<purpose>/<uuid>/<filename>`。`purpose` は用途の区分で、
+`uploads`（ユーザーの添付）と `generated`（エージェントの生成物）がある。UUID の
+ディレクトリを挟むことで、ファイル名の衝突を避けつつ元のファイル名を残せる
+（サニタイズは安全性だけに専念でき、一意性を作るために名前を書き換えなくてよい）。
+
+`FileStorage` は `app/types/file_storage.py` の `Protocol`。ローカル実装
+（`LocalFileStorage`）だけが入っており、**S3 / Azure Blob へ移すときは実装クラスを
+足して差し替える**。署名付き URL は意図的に Protocol に入れていない
+（ローカル実装が偽の URL を返すしかなくなるうえ、ダウンロードは将来の認可のために
+どのみち API を通す必要があるため）。必要になったら任意ケイパビリティの Protocol を
+別に足す。
+
+保存先は `STORAGE_DIR` で切り替える。サイズ上限・MIME 許可リストも含め、設定値は
+すべて `app/config.py` に集約する。
+
+**現時点ではファイルに認可が無い。** UUID を知っていれば誰でもダウンロードできる。
+`DEFAULT_USER_ID` を実ユーザー ID に差し替える（＝認証を足す）段階で、`files` に
+所有者の列を足すこと。
 
 ## コーディング規約
 
