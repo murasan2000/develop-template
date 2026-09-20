@@ -34,11 +34,13 @@ repos:
       - id: check-yaml
         args: [--allow-multiple-documents]
       - id: check-json
-        # devcontainer.json and VS Code's settings are JSONC (comments allowed).
+        # These are JSONC, not JSON: comments are allowed and widely used in
+        # them, so a strict JSON parser is the wrong tool.
         exclude: |
           (?x)^(
             (.*/)?devcontainer\.json|
-            \.vscode/.*\.json
+            \.vscode/.*\.json|
+            (.*/)?tsconfig(\.[\w-]+)?\.json
           )$
       - id: check-toml
       - id: check-executables-have-shebangs

@@ -1,0 +1,26 @@
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.25rem 1rem 1.5rem;
+}
+
+.message-list > .message,
+.message-list__typing-row {
+  max-width: 46rem;
+  width: 100%;
+}
+
+.message-list__typing-row {
+  display: flex;
+  padding-left: 2.7rem; /* アバター幅 + gap 分インデントして、応答側のバブル位置に揃える */
+}
+
+@media (max-width: 768px) {
+  .message-list {
+    padding: 1rem 0.75rem 1.25rem;
+  }
+}

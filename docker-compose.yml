@@ -1,0 +1,91 @@
+# ローカル開発用の compose 定義。
+#
+#   cp .env.example .env   # GOOGLE_API_KEY を埋める
+#   docker compose up --build
+#
+#   web  http://localhost:5173
+#   api  http://localhost:8000/docs
+#   db   localhost:5432
+#
+# api / web はソースをバインドマウントしてホットリロードする。本番向けの
+# イメージは別 stage（web の `build` stage、api は依存を焼き込んだ非マウント運用）
+# を起点にする想定で、この compose はあくまで開発用。
+name: chat-template
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_local_password}
+      POSTGRES_DB: ${POSTGRES_DB:-chat}
+      # ロケール指定なしの初期化は Debian/Alpine で挙動が割れるため明示する。
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      # postgres:18+ はデータを /var/lib/postgresql/<major>/docker に置き、
+      # /var/lib/postgresql/data へのマウントを検出するとエラーで停止する
+      # （pg_upgrade --link をマウント境界を跨がずに行えるようにするため）。
+      # マウントは親ディレクトリ 1 点に置く。
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      # api は「起動した」ではなく「接続を受け付ける」まで待つ必要がある。
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-chat}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # compose 内では db サービス名で解決する（.env の値より優先させる）。
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app_local_password}@db:5432/${POSTGRES_DB:-chat}
+      CORS_ORIGINS: http://localhost:5173
+      # ファイル実体の保存先。/app 配下はソースのバインドマウント領域なので、
+      # データを混ぜないよう別の階層に置く。
+      STORAGE_DIR: /data/storage
+    ports:
+      - "8000:8000"
+    volumes:
+      # ソースだけをマウントする。.venv はイメージ側（/opt/venv）にあるので
+      # ホストの有無に影響されない。
+      - ./api/app:/app/app
+      - ./api/tests:/app/tests
+      # ファイル置き場はホスト側と共有する（コンテナを作り直しても消えないように）。
+      # dev stage は root で動くので権限は問題にならないが、prod stage は uid 10001 の
+      # 非 root で動くため、本番相当で動かす場合はホスト側 ./storage に書き込み権限が要る。
+      - ./storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      target: dev
+    restart: unless-stopped
+    environment:
+      # Vite の dev サーバが /api をこの向き先へプロキシする。
+      VITE_PROXY_TARGET: http://api:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./web:/app
+      # node_modules はコンテナ側（Linux ビルド済み）を使う。ホストのものを
+      # 被せると esbuild 等のネイティブバイナリが合わずに起動しなくなる。
+      - /app/node_modules
+    depends_on:
+      - api
+
+volumes:
+  db-data:
