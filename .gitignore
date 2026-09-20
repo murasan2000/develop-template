@@ -32,6 +32,12 @@ crash.log
 # Cloud CLI
 .gcloudignore
 
+# ローカルのファイル置き場（実体はコミットしない）。
+# ディレクトリごと ignore すると git がその中を辿らなくなり、否定パターン（!）が
+# 効かなくなるため、必ず `/storage/*` の形で中身だけを対象にする。
+/storage/*
+!/storage/.gitkeep
+
 # OS / editor
 .DS_Store
 Thumbs.db

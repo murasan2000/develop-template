@@ -50,6 +50,9 @@ services:
       # compose 内では db サービス名で解決する（.env の値より優先させる）。
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app_local_password}@db:5432/${POSTGRES_DB:-chat}
       CORS_ORIGINS: http://localhost:5173
+      # ファイル実体の保存先。/app 配下はソースのバインドマウント領域なので、
+      # データを混ぜないよう別の階層に置く。
+      STORAGE_DIR: /data/storage
     ports:
       - "8000:8000"
     volumes:
@@ -57,6 +60,10 @@ services:
       # ホストの有無に影響されない。
       - ./api/app:/app/app
       - ./api/tests:/app/tests
+      # ファイル置き場はホスト側と共有する（コンテナを作り直しても消えないように）。
+      # dev stage は root で動くので権限は問題にならないが、prod stage は uid 10001 の
+      # 非 root で動くため、本番相当で動かす場合はホスト側 ./storage に書き込み権限が要る。
+      - ./storage:/data/storage
     depends_on:
       db:
         condition: service_healthy
