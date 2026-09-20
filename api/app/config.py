@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,10 +43,62 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # --- ファイル置き場 -----------------------------------------------------
+    # 実体の保存先ディレクトリ。None（未設定）ならリポジトリ直下の storage/ を
+    # 使う（`storage_path` 参照）。Docker では STORAGE_DIR=/data/storage が
+    # 必ず設定されるため、フォールバックはローカル直起動時のみ使われる。
+    storage_dir: str | None = None
+
+    # 1 ファイルあたりのサイズ上限（バイト）。既定 10 MiB。
+    upload_max_file_bytes: int = 10_485_760
+    # 1 メッセージに添付できる件数の上限。
+    upload_max_files_per_message: int = 5
+    # 1 メッセージあたりの添付合計サイズの上限（バイト）。既定 15 MiB。
+    # 添付は Gemini へ inline で渡すため、この上限は「1 リクエストで API
+    # プロセスがメモリに載せる量」の上限も兼ねている（D4）。
+    upload_max_total_bytes_per_message: int = 15_728_640
+    # アップロードを許可する MIME タイプ（カンマ区切り）。ここに無いものは
+    # 415 で弾く。既定値には**わざと** inline 非対応の形式
+    # （application/json / application/zip）を含めている。「Gemini が読めない
+    # 形式はファイル名だけ伝えてエラーにしない」という経路を、テンプレートの
+    # 既定状態でも到達可能にするため（`docs/plans/file-attachments.md` D5）。
+    upload_allowed_mime_types: str = (
+        "image/png,image/jpeg,image/webp,image/gif,"
+        "application/pdf,text/plain,text/markdown,text/csv,"
+        "application/json,application/zip"
+    )
+    # どのメッセージにも紐づかないファイル（孤児）を掃除するまでの時間（時間単位）。
+    orphan_file_ttl_hours: int = 24
+
     @property
     def cors_origin_list(self) -> list[str]:
         """CORS_ORIGINS をカンマ区切りで list[str] に分解する。"""
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def storage_path(self) -> Path:
+        """ファイル実体の保存先ディレクトリ。
+
+        `storage_dir` が設定されていればそれを展開・正規化して使う。未設定
+        なら**リポジトリ直下の `storage/`** を指す
+        （このファイル `api/app/config.py` から見て `parents[2]` ==
+        `api/app/` → `api/` → リポジトリルート）。`cd api && uv run
+        uvicorn ...` でもリポジトリルートから起動しても同じ場所を指すのが
+        狙い。**Docker コンテナ内（`/app/app/config.py`）では `parents[2]`
+        が `/` になってしまう**ため、compose では必ず `STORAGE_DIR` を
+        設定してこのフォールバックを使わせない。
+        """
+        if self.storage_dir:
+            return Path(self.storage_dir).expanduser().resolve()
+        return Path(__file__).resolve().parents[2] / "storage"
+
+    @property
+    def allowed_mime_type_list(self) -> list[str]:
+        """UPLOAD_ALLOWED_MIME_TYPES をカンマ区切りで list[str] に分解する。
+
+        空文字列は「全許可」として扱う（派生プロジェクト向けの脱出口）。
+        """
+        return [t.strip() for t in self.upload_allowed_mime_types.split(",") if t.strip()]
 
 
 def get_settings() -> Settings:

@@ -10,11 +10,12 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, cast
 
 import anyio
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -22,13 +23,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import get_settings
 from app.servers.state import AppState, get_app_state
 from app.services import chat as chat_service
+from app.services import files as files_service
 from app.services.db import (
+    FileRecord,
     Message,
     create_engine,
     create_session_factory,
     init_models,
     session_scope,
 )
+from app.services.storage import LocalFileStorage
 from app.types.agent_runtime import ChatAgentRuntime
 from app.types.api import (
     ConversationDetail,
@@ -36,11 +40,20 @@ from app.types.api import (
     CreateConversationRequest,
     DoneEventPayload,
     ErrorEventPayload,
+    FileOut,
     HealthResponse,
     MessageOut,
     SendMessageRequest,
 )
+from app.types.attachments import AgentAttachment
+from app.types.file_storage import FileStorage
 from app.utils.errors import to_user_facing_error
+from app.utils.files import (
+    build_storage_key,
+    content_disposition_header,
+    resolve_mime_type,
+    sanitize_filename,
+)
 from app.utils.sse import format_sse
 
 logger = logging.getLogger(__name__)
@@ -88,6 +101,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_models(engine)
     session_factory = create_session_factory(engine)
 
+    storage = LocalFileStorage(settings.storage_path)
+    # 起動時に 1 回だけ、孤児ファイル（どのメッセージにも紐付かないまま
+    # TTL を過ぎたアップロード）を掃除する（D2-2/3）。**この方式の限界**:
+    # 常駐のバックグラウンドタスクは持たないので、長時間動き続けるプロセス
+    # では起動後に生まれた孤児は掃除されない。`create_all` をマイグレーション
+    # の代わりにしているのと同種の、テンプレートとしての割り切り。
+    # 本番運用ではスケジューラ／cron ジョブに置き換えること。
+    await _sweep_orphan_files(session_factory, storage, settings.orphan_file_ttl_hours)
+
     create_chat_runtime = _load_create_chat_runtime()
     runtime = await create_chat_runtime(
         database_url=settings.database_url,
@@ -105,12 +127,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine=engine,
         session_factory=session_factory,
         runtime=runtime,
+        storage=storage,
     )
     try:
         yield
     finally:
         await runtime.aclose()
         await engine.dispose()
+
+
+async def _sweep_orphan_files(
+    session_factory: async_sessionmaker[AsyncSession],
+    storage: FileStorage,
+    ttl_hours: int,
+) -> None:
+    """どのメッセージにも紐付いていない、TTL より古いファイルを削除する。
+
+    実体（`storage.delete`）→ DB 行の順で削除する。実体を消す前に DB 行を
+    消してしまうと、途中で失敗したときに「メタデータは無いのに実体だけ残る」
+    孤児が生まれてしまうため。
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
+    async with session_factory() as session:
+        orphans = await files_service.list_orphan_file_records(session, cutoff)
+        for record in orphans:
+            await storage.delete(record.storage_key)
+            await files_service.delete_file_record(session, record)
+        await session.commit()
 
 
 router = APIRouter(prefix="/api")
@@ -191,10 +234,159 @@ async def get_conversation(conversation_id: uuid.UUID, session: SessionDep) -> C
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204)
-async def delete_conversation(conversation_id: uuid.UUID, session: SessionDep) -> None:
-    deleted = await chat_service.delete_conversation(session, conversation_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="conversation not found")
+async def delete_conversation(conversation_id: uuid.UUID, request: Request) -> None:
+    """会話を削除する。メッセージ・添付のメタデータは DB cascade で消える。
+
+    添付ファイルの**実体**は ORM cascade の対象外（`storage/` 上のファイル）
+    なので、削除前に `storage_key` を集めておき、DB コミットが成功した後に
+    ベストエフォートで実体を削除する（D2）。ここで実体削除に使う `session`
+    を `SessionDep` ではなく自前で開閉するのは、「コミット成功後」という
+    タイミングを明示的に扱いたいため（`SessionDep` はコミットをリクエスト
+    終了時の後処理に委ねるため、この位置に割り込めない）。
+    """
+    state = get_app_state(request)
+    async with state.session_factory() as session:
+        storage_keys = await chat_service.collect_attachment_storage_keys(session, conversation_id)
+        deleted = await chat_service.delete_conversation(session, conversation_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        await session.commit()
+
+    for storage_key in storage_keys:
+        try:
+            await state.storage.delete(storage_key)
+        except Exception:
+            # 実体の削除に失敗してもユーザーに見える壊れ方はしない
+            # （ディスクにゴミが残るだけ）一方、ここで例外にすると会話削除
+            # そのものが失敗してしまう。この非対称性から握りつぶして warning
+            # ログに残すに留める（D2）。
+            logger.warning(
+                "failed to delete attachment file after conversation deletion: "
+                "conversation_id=%s storage_key=%s",
+                conversation_id,
+                storage_key,
+                exc_info=True,
+            )
+
+
+# アップロード読み取りの 1 チャンクあたりのサイズ。読みながら上限を検査する
+# ため、上限を大きく超えるファイルでもメモリに載るのはこのチャンク分だけに
+# 抑えられる（先に全部読んでから測るとメモリ枯渇の経路になる）。
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+
+
+@router.post("/files", response_model=FileOut, status_code=201)
+async def upload_file(
+    request: Request,
+    file: Annotated[UploadFile, File()],
+) -> FileOut:
+    """ファイルを 1 件アップロードする。
+
+    サイズ・MIME タイプの検証をここで完結させる（D1: アップロードは送信とは
+    別エンドポイントにすることで、413/415/400 を通常の HTTP ステータスで
+    即座に返せる）。`purpose` は常にサーバが `"uploads"` と決める
+    （クライアントに `generated` を作らせない。`generated` は将来のサーバ側
+    ツール専用の予約区分）。
+    """
+    state = get_app_state(request)
+    settings = state.settings
+
+    sanitized_name = sanitize_filename(file.filename or "")
+    mime_type = resolve_mime_type(file.content_type, sanitized_name)
+    allowed = settings.allowed_mime_type_list
+    if allowed and mime_type not in allowed:
+        raise HTTPException(status_code=415, detail="unsupported file type")
+
+    max_bytes = settings.upload_max_file_bytes
+    chunks: list[bytes] = []
+    total_bytes = 0
+    while True:
+        chunk = await file.read(_UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise HTTPException(status_code=413, detail="file too large")
+        chunks.append(chunk)
+    if total_bytes == 0:
+        raise HTTPException(status_code=400, detail="empty file")
+    data = b"".join(chunks)
+
+    file_id = uuid.uuid4()
+    storage_key = build_storage_key("uploads", str(file_id), sanitized_name)
+    await state.storage.save(storage_key, data)
+
+    try:
+        async with state.session_factory() as session:
+            record = await files_service.create_file_record(
+                session,
+                file_id=file_id,
+                purpose="uploads",
+                filename=sanitized_name,
+                mime_type=mime_type,
+                size_bytes=total_bytes,
+                storage_key=storage_key,
+            )
+            await session.commit()
+            file_out = FileOut.model_validate(record)
+    except Exception:
+        # 実体の保存には成功したが DB へのメタデータ保存に失敗した場合。
+        # ここで実体を削除せずに re-raise すると、DB に存在しないのに
+        # `storage/` にだけファイルが残る孤児を作ってしまう。
+        await state.storage.delete(storage_key)
+        raise
+
+    return file_out
+
+
+@router.get("/files/{file_id}/content")
+async def download_file(
+    file_id: uuid.UUID, session: SessionDep, request: Request
+) -> StreamingResponse:
+    """ファイル本体をダウンロードする。
+
+    D7: 保存型 XSS 対策として、常にダウンロード用のヘッダを付ける
+    （`<img src>` のようなサブリソース読み込みは `Content-Disposition` を
+    無視するため、画像プレビューへの埋め込みは影響を受けない）。
+    """
+    state = get_app_state(request)
+    record = await files_service.get_file_record(session, file_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    try:
+        stream = state.storage.open_stream(record.storage_key)
+    except FileNotFoundError:
+        # DB にメタデータは残っているが実体が無い場合も 404 として扱う。
+        raise HTTPException(status_code=404, detail="file not found") from None
+
+    headers = {
+        "Content-Disposition": content_disposition_header(record.filename),
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Cache-Control": "private, max-age=3600",
+    }
+    return StreamingResponse(stream, media_type=record.mime_type, headers=headers)
+
+
+@router.delete("/files/{file_id}", status_code=204)
+async def delete_file(file_id: uuid.UUID, session: SessionDep, request: Request) -> None:
+    """未添付のファイルを削除する。既にメッセージへ添付済みなら 409。
+
+    1 ファイルは 1 メッセージにしか属せない設計（D9 参照）なので、添付済み
+    ファイルの削除を許すと、そのメッセージの履歴が指すファイルが失われる。
+    """
+    state = get_app_state(request)
+    record = await files_service.get_file_record(session, file_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="file not found")
+    if record.message_id is not None:
+        raise HTTPException(status_code=409, detail="file already attached to a message")
+
+    # 実体 → DB 行の順に削除する（DB 行を先に消すと、途中で失敗したときに
+    # 「メタデータは無いのに実体だけ残る」孤児が生まれてしまうため）。
+    await state.storage.delete(record.storage_key)
+    await files_service.delete_file_record(session, record)
 
 
 async def _persist_assistant_reply(
@@ -236,23 +428,82 @@ async def send_message(
     """
     state = get_app_state(request)
     session_factory = state.session_factory
+    settings = state.settings
     runtime = state.runtime
     user_id = state.settings.default_user_id
 
+    content_text = body.content
+    attachment_ids = body.attachment_ids
+
+    # 添付の検証（存在・重複・件数・合計サイズ）はすべてストリーム開始前に
+    # 行う。SSE を開始した後は HTTP ステータスを変えられないため。
+    if not content_text.strip() and not attachment_ids:
+        raise HTTPException(status_code=400, detail="content または attachment_ids が必要です")
+    if len(attachment_ids) != len(set(attachment_ids)):
+        raise HTTPException(status_code=400, detail="attachment_ids に重複があります")
+    if len(attachment_ids) > settings.upload_max_files_per_message:
+        raise HTTPException(status_code=400, detail="添付ファイルの件数が上限を超えています")
+
     # 会話の存在確認とユーザー発言の保存は、ストリーム開始"前"に行う。ここで
-    # 404 を通常の JSON エラーとして返せるのは、まだ SSE を開始していないため。
+    # 404/409/400 を通常の JSON エラーとして返せるのは、まだ SSE を開始
+    # していないため。
     async with session_factory() as session:
         conversation = await chat_service.get_conversation(session, conversation_id)
         if conversation is None:
             raise HTTPException(status_code=404, detail="conversation not found")
+
+        attachment_records: list[FileRecord] = []
+        if attachment_ids:
+            found = await files_service.get_files_by_ids(session, attachment_ids)
+            found_by_id = {record.id: record for record in found}
+            missing_ids = [str(i) for i in attachment_ids if i not in found_by_id]
+            if missing_ids:
+                raise HTTPException(status_code=404, detail="attachment not found")
+            already_attached_ids = [
+                str(i) for i in attachment_ids if found_by_id[i].message_id is not None
+            ]
+            if already_attached_ids:
+                raise HTTPException(
+                    status_code=409, detail="attachment already attached to another message"
+                )
+            # リクエストで指定された順序を保つ（DB の取得順は保証されないため）。
+            attachment_records = [found_by_id[i] for i in attachment_ids]
+            total_attachment_bytes = sum(r.size_bytes for r in attachment_records)
+            if total_attachment_bytes > settings.upload_max_total_bytes_per_message:
+                raise HTTPException(
+                    status_code=400, detail="添付ファイルの合計サイズが上限を超えています"
+                )
+
         should_retitle = chat_service.is_default_title(conversation.title)
+        # 添付はメッセージ作成のコンストラクタ引数として渡す
+        # （`add_message` のコメント参照。後から代入すると AsyncSession で
+        # `MissingGreenlet` になる）。
         user_message = await chat_service.add_message(
-            session, conversation_id, "user", body.content
+            session, conversation_id, "user", content_text, attachments=attachment_records
         )
         await session.commit()
         user_message_out = MessageOut.model_validate(user_message)
 
-    new_title = chat_service.derive_title_from_content(body.content) if should_retitle else None
+    # D8: 本文が空（添付のみ）のときは最初の添付のファイル名をタイトルの
+    # 元にする。`derive_title_from_content` 自体は変更不要（空文字なら
+    # デフォルトタイトルを返す既存挙動のままで良い）。
+    title_source = content_text.strip() or (
+        attachment_records[0].filename if attachment_records else ""
+    )
+    new_title = chat_service.derive_title_from_content(title_source) if should_retitle else None
+
+    # ストレージからバイト列を読み、エージェント層へ渡す AgentAttachment を
+    # 組み立てる。ここ（ストリーム開始前）で読むのは、`FileNotFoundError` が
+    # 起きた場合に通常の HTTP エラー（500）を返せるようにするため。
+    agent_attachments: list[AgentAttachment] = [
+        AgentAttachment(
+            filename=record.filename,
+            mime_type=record.mime_type,
+            size_bytes=record.size_bytes,
+            data=await state.storage.load(record.storage_key),
+        )
+        for record in attachment_records
+    ]
 
     async def event_stream() -> AsyncIterator[str]:
         yield format_sse("user", user_message_out.model_dump(mode="json"))
@@ -260,7 +511,9 @@ async def send_message(
         collected = ""
         try:
             await runtime.ensure_session(str(conversation_id), user_id)
-            async for delta in runtime.stream_reply(str(conversation_id), user_id, body.content):
+            async for delta in runtime.stream_reply(
+                str(conversation_id), user_id, content_text, attachments=agent_attachments
+            ):
                 collected += delta
                 yield format_sse("delta", {"text": delta})
         except (GeneratorExit, anyio.get_cancelled_exc_class()):
@@ -321,6 +574,9 @@ async def send_message(
             content=assistant_message.content,
             created_at=assistant_message.created_at,
             title=final_title,
+            # 今回のスコープでは assistant メッセージに添付が付くことは無いが、
+            # `Message` と同じ形を保つため常に空配列を明示する（契約参照）。
+            attachments=[],
         )
         yield format_sse("done", payload.model_dump(mode="json"))
 

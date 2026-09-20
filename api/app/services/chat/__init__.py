@@ -2,6 +2,7 @@
 
 from app.services.chat.repository import (
     add_message,
+    collect_attachment_storage_keys,
     create_conversation,
     delete_conversation,
     get_conversation,
@@ -18,6 +19,7 @@ from app.services.chat.titles import (
 __all__ = [
     "DEFAULT_CONVERSATION_TITLE",
     "add_message",
+    "collect_attachment_storage_keys",
     "create_conversation",
     "delete_conversation",
     "derive_title_from_content",

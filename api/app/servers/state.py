@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.types.agent_runtime import ChatAgentRuntime
+from app.types.file_storage import FileStorage
 
 
 @dataclass
@@ -29,6 +30,7 @@ class AppState:
     engine: AsyncEngine
     session_factory: async_sessionmaker[AsyncSession]
     runtime: ChatAgentRuntime
+    storage: FileStorage
 
 
 def get_app_state(request: Request) -> AppState:

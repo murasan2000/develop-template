@@ -78,3 +78,41 @@ class Message(Base):
     )
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+    attachments: Mapped[list[FileRecord]] = relationship(
+        back_populates="message",
+        cascade="all, delete-orphan",
+        order_by="FileRecord.created_at",
+    )
+
+
+class FileRecord(Base):
+    """ファイル置き場のメタデータ。実体は `FileStorage` 側にあり、ここには入れない
+    （DB に BLOB を入れない方針）。
+
+    `conversation_id` は持たせない。`useChat` はメッセージ送信の遅延で会話を
+    作成するため、アップロード時点では会話がまだ存在しないことがある。また
+    ファイル置き場はチャットに従属しない汎用資源として設計しており、紐付けは
+    メッセージ経由でのみ行う。
+    """
+
+    __tablename__ = "files"
+    __table_args__ = (
+        sa.Index("ix_files_message_id", "message_id"),
+        # 孤児掃除（message_id IS NULL かつ古いもの）の走査用。
+        sa.Index("ix_files_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
+    purpose: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    filename: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    mime_type: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)
+    storage_key: Mapped[str] = mapped_column(sa.Text, nullable=False, unique=True)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("messages.id", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    message: Mapped[Message | None] = relationship(back_populates="attachments")

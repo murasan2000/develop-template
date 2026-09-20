@@ -292,3 +292,172 @@ async def test_send_message_model_overloaded_error_hides_raw_provider_payload(
             ),
             "code": "model_overloaded",
         }
+
+
+async def test_send_message_with_attachment_reaches_user_event_and_agent(tmp_path: Path) -> None:
+    """添付付き送信で `user` イベントに attachments が乗り、`stream_reply` に
+    正しいバイト列（ファイル内容そのもの）が渡ること。
+    """
+    runtime = FakeChatAgentRuntime(reply_chunks=["了解しました"])
+    async with make_client(tmp_path, runtime=runtime) as (client, _state):
+        create_res = await client.post("/api/conversations", json={})
+        conversation_id = create_res.json()["id"]
+
+        upload_res = await client.post(
+            "/api/files",
+            files={"file": ("photo.png", b"fake-png-bytes", "image/png")},
+        )
+        file_id = upload_res.json()["id"]
+
+        async with client.stream(
+            "POST",
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "この画像を見て", "attachment_ids": [file_id]},
+        ) as response:
+            assert response.status_code == 200
+            raw = await response.aread()
+
+        events = parse_sse_events(raw.decode("utf-8"))
+        user_event = events[0][1]
+        assert user_event["attachments"] == [
+            {
+                "id": file_id,
+                "filename": "photo.png",
+                "mime_type": "image/png",
+                "size_bytes": len(b"fake-png-bytes"),
+                "purpose": "uploads",
+                "created_at": user_event["attachments"][0]["created_at"],
+                "content_url": f"/api/files/{file_id}/content",
+            }
+        ]
+
+        done_event = events[-1][1]
+        assert done_event["attachments"] == []
+
+        # エージェント層へは実体のバイト列がそのまま渡っていること。
+        assert len(runtime.stream_reply_attachment_calls) == 1
+        [attachments] = runtime.stream_reply_attachment_calls
+        assert len(attachments) == 1
+        assert attachments[0]["filename"] == "photo.png"
+        assert attachments[0]["mime_type"] == "image/png"
+        assert attachments[0]["data"] == b"fake-png-bytes"
+
+        # 添付済みファイルは再度他のメッセージへ添付できない（409 のテストは
+        # test_files_api.py 側にもあるが、ここでは会話履歴に残ることを確認する）。
+        detail_res = await client.get(f"/api/conversations/{conversation_id}")
+        detail = detail_res.json()
+        assert detail["messages"][0]["attachments"][0]["filename"] == "photo.png"
+
+
+async def test_send_message_with_empty_content_and_attachment_succeeds(tmp_path: Path) -> None:
+    """本文が空でも添付があれば送信できる（添付のみのメッセージ）。"""
+    async with make_client(tmp_path) as (client, _state):
+        create_res = await client.post("/api/conversations", json={})
+        conversation_id = create_res.json()["id"]
+
+        upload_res = await client.post(
+            "/api/files",
+            files={"file": ("diagram.png", b"png-bytes", "image/png")},
+        )
+        file_id = upload_res.json()["id"]
+
+        async with client.stream(
+            "POST",
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "", "attachment_ids": [file_id]},
+        ) as response:
+            assert response.status_code == 200
+            raw = await response.aread()
+
+        events = parse_sse_events(raw.decode("utf-8"))
+        assert events[0][1]["content"] == ""
+        assert events[0][1]["attachments"][0]["filename"] == "diagram.png"
+
+        # D8: 本文が空のときはタイトルが最初の添付のファイル名になる。
+        detail_res = await client.get(f"/api/conversations/{conversation_id}")
+        assert detail_res.json()["conversation"]["title"] == "diagram.png"
+
+
+async def test_send_message_empty_content_and_no_attachments_returns_400(
+    client: AsyncClient,
+) -> None:
+    create_res = await client.post("/api/conversations", json={})
+    conversation_id = create_res.json()["id"]
+
+    res = await client.post(
+        f"/api/conversations/{conversation_id}/messages",
+        json={"content": ""},
+    )
+    assert res.status_code == 400
+
+
+async def test_send_message_with_missing_attachment_id_returns_404(client: AsyncClient) -> None:
+    create_res = await client.post("/api/conversations", json={})
+    conversation_id = create_res.json()["id"]
+
+    res = await client.post(
+        f"/api/conversations/{conversation_id}/messages",
+        json={
+            "content": "hello",
+            "attachment_ids": ["00000000-0000-0000-0000-000000000000"],
+        },
+    )
+    assert res.status_code == 404
+
+
+async def test_send_message_with_already_attached_attachment_returns_409(
+    tmp_path: Path,
+) -> None:
+    async with make_client(tmp_path) as (client, _state):
+        create_res = await client.post("/api/conversations", json={})
+        conversation_id = create_res.json()["id"]
+
+        upload_res = await client.post(
+            "/api/files",
+            files={"file": ("note.txt", b"hello", "text/plain")},
+        )
+        file_id = upload_res.json()["id"]
+
+        async with client.stream(
+            "POST",
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "1回目", "attachment_ids": [file_id]},
+        ) as response:
+            assert response.status_code == 200
+            await response.aread()
+
+        res = await client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "2回目", "attachment_ids": [file_id]},
+        )
+        assert res.status_code == 409
+
+
+async def test_delete_conversation_removes_attachment_records_and_content(
+    tmp_path: Path,
+) -> None:
+    """会話を削除すると、その会話の添付ファイルの DB 行と実体の両方が消えること。"""
+    async with make_client(tmp_path) as (client, _state):
+        create_res = await client.post("/api/conversations", json={})
+        conversation_id = create_res.json()["id"]
+
+        upload_res = await client.post(
+            "/api/files",
+            files={"file": ("note.txt", b"hello", "text/plain")},
+        )
+        file_id = upload_res.json()["id"]
+
+        async with client.stream(
+            "POST",
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "", "attachment_ids": [file_id]},
+        ) as response:
+            assert response.status_code == 200
+            await response.aread()
+
+        delete_res = await client.delete(f"/api/conversations/{conversation_id}")
+        assert delete_res.status_code == 204
+
+        # ファイルの実体・メタデータのどちらも消えている（404）こと。
+        get_res = await client.get(f"/api/files/{file_id}/content")
+        assert get_res.status_code == 404

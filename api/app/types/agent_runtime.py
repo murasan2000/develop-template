@@ -11,8 +11,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Protocol, runtime_checkable
+
+from app.types.attachments import AgentAttachment
 
 
 @runtime_checkable
@@ -25,8 +27,19 @@ class ChatAgentRuntime(Protocol):
         """ADK セッション（エージェントの作業記憶）が無ければ作る。"""
         ...
 
-    def stream_reply(self, conversation_id: str, user_id: str, text: str) -> AsyncIterator[str]:
-        """応答の増分テキストだけを yield する。例外はそのまま送出してよい。"""
+    def stream_reply(
+        self,
+        conversation_id: str,
+        user_id: str,
+        text: str,
+        attachments: Sequence[AgentAttachment] = (),
+    ) -> AsyncIterator[str]:
+        """応答の増分テキストだけを yield する。例外はそのまま送出してよい。
+
+        `attachments` はそのターンで新たに添付されたファイルのみを渡す
+        （ADK の `SessionService` が送信済みパートをセッション内に保持する
+        ため、以降のターンで同じファイルを送り直す必要はない）。
+        """
         ...
 
     async def aclose(self) -> None:

@@ -15,6 +15,7 @@ from app.config import Settings
 from app.servers.api import create_app
 from app.servers.state import AppState
 from app.services.db import create_engine, create_session_factory, init_models
+from app.services.storage import LocalFileStorage
 from httpx import ASGITransport, AsyncClient
 
 from tests.fakes import FakeChatAgentRuntime
@@ -22,7 +23,9 @@ from tests.fakes import FakeChatAgentRuntime
 
 @asynccontextmanager
 async def make_client(
-    tmp_path: Path, runtime: FakeChatAgentRuntime | None = None
+    tmp_path: Path,
+    runtime: FakeChatAgentRuntime | None = None,
+    settings_overrides: dict[str, object] | None = None,
 ) -> AsyncIterator[tuple[AsyncClient, AppState]]:
     """SQLite（一時ファイル）+ フェイクランタイムでアプリを組み立てる。
 
@@ -30,16 +33,24 @@ async def make_client(
     lifespan（DB init・agents ロード）は実行されない。その代わりここで
     `app.state.app_state` を直接差し替えることで、DI ポイントを経由した
     テストダブルの注入を実現する。
+
+    `settings_overrides` は、アップロード上限のテスト（例: 極端に小さい
+    `upload_max_file_bytes` を設定して 413 を再現する）のために、既定の
+    `Settings` の一部だけを差し替えたいケース向け。
     """
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
     engine = create_engine(database_url)
     await init_models(engine)
     session_factory = create_session_factory(engine)
+    settings = Settings(database_url=database_url)
+    for key, value in (settings_overrides or {}).items():
+        setattr(settings, key, value)
     state = AppState(
-        settings=Settings(database_url=database_url),
+        settings=settings,
         engine=engine,
         session_factory=session_factory,
         runtime=runtime if runtime is not None else FakeChatAgentRuntime(),
+        storage=LocalFileStorage(tmp_path / "storage"),
     )
 
     app = create_app()

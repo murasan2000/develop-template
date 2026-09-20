@@ -10,9 +10,15 @@ import uuid
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 Role = Literal["user", "assistant"]
+
+# ファイル置き場の用途区分。ストレージのレイアウト
+# `storage/<purpose>/<uuid>/<filename>` の第 1 階層に一致する。`generated` は
+# 将来のエージェント生成ファイル用の予約で、今回のスコープでは API 経由で
+# 作られることはない（サーバは常に "uploads" として保存する）。
+FilePurpose = Literal["uploads", "generated"]
 
 # クライアントが「再送を勧めるか」を判断するための機械可読コード。
 # `model_overloaded`/`rate_limited` は再送で直る見込みがあるが、
@@ -51,6 +57,35 @@ class ConversationOut(BaseModel):
         return _ensure_utc(value)
 
 
+class FileOut(BaseModel):
+    """ファイル 1 件のレスポンス表現（メタデータのみ。実体は含まない）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    filename: str
+    mime_type: str
+    size_bytes: int
+    purpose: FilePurpose
+    created_at: datetime
+
+    @field_validator("created_at", mode="after")
+    @classmethod
+    def _normalize_timezone(cls, value: datetime) -> datetime:
+        return _ensure_utc(value)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def content_url(self) -> str:
+        """クライアントに URL を組み立てさせないための、サーバ算出フィールド。
+
+        将来クラウドストレージへ移行して署名付き URL を返すようになっても、
+        サーバがこの中身を差し替えるだけでフロントエンドは無変更で済む
+        （`docs/api-contract.md` 参照）。
+        """
+        return f"/api/files/{self.id}/content"
+
+
 class MessageOut(BaseModel):
     """メッセージ 1 件のレスポンス表現。"""
 
@@ -61,6 +96,8 @@ class MessageOut(BaseModel):
     role: Role
     content: str
     created_at: datetime
+    # 添付が無ければ空配列（null/undefined にはしない。契約の要点）。
+    attachments: list[FileOut] = Field(default_factory=list)
 
     @field_validator("created_at", mode="after")
     @classmethod
@@ -90,13 +127,26 @@ class CreateConversationRequest(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    """メッセージ送信のリクエストボディ。"""
+    """メッセージ送信のリクエストボディ。
+
+    `content` は `attachment_ids` が空でないときに限り空文字を許す
+    （どちらも空なら 400。この組み合わせ検査は両フィールドの相関に依存する
+    ため、422 を返す pydantic のフィールド検証ではなく、`app/servers/api.py`
+    側で明示的に 400 として弾く）。
+    """
 
     content: str
+    attachment_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class DoneEventPayload(BaseModel):
-    """SSE `done` イベントの data。確定した assistant メッセージ＋更新後タイトル。"""
+    """SSE `done` イベントの data。確定した assistant メッセージ＋更新後タイトル。
+
+    `attachments` は今回のスコープでは常に空配列（assistant メッセージに
+    添付が付くことは無い）。それでも `Message` と同じ形を保つために省略しない
+    ——role で `Message` の形を分岐させると、クライアント側の分岐が増えて
+    壊れやすくなるため。
+    """
 
     id: uuid.UUID
     conversation_id: uuid.UUID
@@ -104,6 +154,7 @@ class DoneEventPayload(BaseModel):
     content: str
     created_at: datetime
     title: str
+    attachments: list[FileOut] = Field(default_factory=list)
 
     @field_validator("created_at", mode="after")
     @classmethod

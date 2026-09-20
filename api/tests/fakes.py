@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
+
+from app.types.attachments import AgentAttachment
 
 
 class AgentInvocationErrorStub(Exception):
@@ -42,15 +44,23 @@ class FakeChatAgentRuntime:
         self._partial_before_fail = partial_before_fail
         self.ensure_session_calls: list[tuple[str, str]] = []
         self.stream_reply_calls: list[tuple[str, str, str]] = []
+        # 添付付きの呼び出しをテストから検証できるよう、渡された内容を
+        # そのまま記録する（呼び出しごとに 1 件、添付のリストを保持）。
+        self.stream_reply_attachment_calls: list[Sequence[AgentAttachment]] = []
         self.closed = False
 
     async def ensure_session(self, conversation_id: str, user_id: str) -> None:
         self.ensure_session_calls.append((conversation_id, user_id))
 
     async def stream_reply(
-        self, conversation_id: str, user_id: str, text: str
+        self,
+        conversation_id: str,
+        user_id: str,
+        text: str,
+        attachments: Sequence[AgentAttachment] = (),
     ) -> AsyncIterator[str]:
         self.stream_reply_calls.append((conversation_id, user_id, text))
+        self.stream_reply_attachment_calls.append(attachments)
         if self._partial_before_fail is not None:
             yield self._partial_before_fail
         if self._fail_with is not None:

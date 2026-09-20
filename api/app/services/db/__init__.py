@@ -9,11 +9,12 @@ from app.services.db.engine import (
     init_models,
     session_scope,
 )
-from app.services.db.models import Base, Conversation, Message
+from app.services.db.models import Base, Conversation, FileRecord, Message
 
 __all__ = [
     "Base",
     "Conversation",
+    "FileRecord",
     "Message",
     "create_engine",
     "create_session_factory",
