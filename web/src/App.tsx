@@ -45,12 +45,17 @@ function App() {
           isLoadingMessages={chat.isLoadingMessages}
           isStreaming={chat.isStreaming}
           error={conversationError}
-          onSend={(text) => void chat.sendMessage(text)}
+          onSend={(text, attachmentIds) => void chat.sendMessage(text, attachmentIds)}
           onStop={chat.stopStreaming}
           onOpenSidebar={() => setIsSidebarOpen(true)}
           onStartNew={chat.startNewConversation}
           onDismissError={chat.dismissError}
           onRetryError={chat.retryLastMessage}
+          attachments={chat.attachments}
+          onAddAttachments={chat.addAttachments}
+          onRemoveAttachment={chat.removeAttachment}
+          isUploadingAttachments={chat.isUploadingAttachments}
+          readyAttachmentIds={chat.readyAttachmentIds}
         />
       </div>
     </div>

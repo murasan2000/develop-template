@@ -1,0 +1,80 @@
+.attachment-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 14rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.attachment-chip--file {
+  color: var(--text);
+}
+
+.attachment-chip__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-chip__size {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-size: 0.72rem;
+}
+
+.attachment-chip__status {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-size: 0.72rem;
+}
+
+.attachment-chip--error {
+  background: var(--danger-surface);
+  border-color: var(--danger-border);
+}
+
+.attachment-chip--error .attachment-chip__status {
+  color: var(--danger);
+}
+
+.attachment-chip__remove {
+  width: 1.4rem;
+  height: 1.4rem;
+  flex-shrink: 0;
+  margin-left: 0.1rem;
+}
+
+/* --- 画像サムネイル ---------------------------------------------------------- */
+.attachment-chip--image {
+  padding: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  max-width: 5.5rem;
+}
+
+.attachment-chip__thumb {
+  display: block;
+  width: 5.5rem;
+  height: 5.5rem;
+  object-fit: cover;
+}
+
+/* プレビュー中の画像は取り消しボタンをサムネイルの上に重ねる。 */
+.attachment-chip__remove--overlay {
+  position: absolute;
+  top: 0.2rem;
+  right: 0.2rem;
+  background: var(--overlay);
+  color: var(--accent-contrast);
+}
+
+.attachment-chip__remove--overlay:hover:not(:disabled) {
+  background: var(--overlay);
+}

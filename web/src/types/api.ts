@@ -11,12 +11,28 @@ export type Conversation = {
   updated_at: string;
 };
 
+// ファイル置き場の用途区分。ストレージのレイアウト `storage/<purpose>/<uuid>/<filename>`
+// の第 1 階層に一致する。generated は将来のエージェント生成ファイル用の予約で、
+// 現時点では API 経由で作られることはない（サーバは常に uploads として保存する）。
+export type FilePurpose = 'uploads' | 'generated';
+
+export type FileMeta = {
+  id: string; // UUID
+  filename: string; // サニタイズ済みの表示名
+  mime_type: string;
+  size_bytes: number;
+  purpose: FilePurpose;
+  created_at: string; // ISO 8601 (UTC)
+  content_url: string; // 例: "/api/files/<id>/content"
+};
+
 export type Message = {
   id: string; // UUID
   conversation_id: string;
   role: Role;
   content: string;
   created_at: string;
+  attachments: FileMeta[]; // 添付が無ければ空配列（null / undefined にはしない）
 };
 
 export type ConversationDetail = {
@@ -37,7 +53,8 @@ export type CreateConversationRequest = {
 };
 
 export type SendMessageRequest = {
-  content: string;
+  content: string; // attachment_ids が空でないときに限り空文字を許す
+  attachment_ids?: string[]; // 省略時は [] として扱う
 };
 
 // --- SSE イベント ------------------------------------------------------------

@@ -1,5 +1,6 @@
 import type { Conversation } from '../../types/api';
 import type { DisplayMessage } from '../../hooks/useChat';
+import type { PendingAttachment } from '../../hooks/useAttachments';
 import { displayTitle } from '../../utils/format';
 import { EmptyState } from '../common/EmptyState';
 import { ErrorBanner } from '../common/ErrorBanner';
@@ -22,12 +23,17 @@ type ChatPaneProps = {
   isLoadingMessages: boolean;
   isStreaming: boolean;
   error: ConversationError | null;
-  onSend: (text: string) => void;
+  onSend: (text: string, attachmentIds: string[]) => void;
   onStop: () => void;
   onOpenSidebar: () => void;
   onStartNew: () => void;
   onDismissError: () => void;
   onRetryError: () => void;
+  attachments: PendingAttachment[];
+  onAddAttachments: (files: File[]) => void;
+  onRemoveAttachment: (localId: string) => void;
+  isUploadingAttachments: boolean;
+  readyAttachmentIds: string[];
 };
 
 export function ChatPane({
@@ -42,6 +48,11 @@ export function ChatPane({
   onStartNew,
   onDismissError,
   onRetryError,
+  attachments,
+  onAddAttachments,
+  onRemoveAttachment,
+  isUploadingAttachments,
+  readyAttachmentIds,
 }: ChatPaneProps) {
   // 「会話は選ばれているが読み込み中」「そもそも何も選ばれていない」を区別する。
   // 前者はメッセージ一覧の場所にスピナー的な余白を出し、後者はウェルカム画面にする。
@@ -84,7 +95,16 @@ export function ChatPane({
             retryDisabled={isStreaming}
           />
         )}
-        <Composer isStreaming={isStreaming} onSend={onSend} onStop={onStop} />
+        <Composer
+          isStreaming={isStreaming}
+          onSend={onSend}
+          onStop={onStop}
+          attachments={attachments}
+          onAddFiles={onAddAttachments}
+          onRemoveAttachment={onRemoveAttachment}
+          isUploadingAttachments={isUploadingAttachments}
+          readyAttachmentIds={readyAttachmentIds}
+        />
       </div>
     </div>
   );

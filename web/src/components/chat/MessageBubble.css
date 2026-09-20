@@ -58,6 +58,16 @@
   padding: 0 0.2rem;
 }
 
+.message__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.message--user .message__attachments {
+  justify-content: flex-end;
+}
+
 .message__bubble {
   padding: 0.65rem 0.95rem;
   border-radius: var(--radius-lg);

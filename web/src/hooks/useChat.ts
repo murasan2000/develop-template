@@ -4,7 +4,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '../api/client';
 import { ApiError } from '../api/client'; // instanceof チェック用に named import も併用する
-import type { Conversation, ErrorCode, Message } from '../types/api';
+import { useAttachments } from './useAttachments';
+import type { Conversation, ErrorCode, FileMeta, Message } from '../types/api';
 import { byUpdatedAtDesc } from '../utils/format';
 
 // 再送で直る見込みがあるエラーだけ「再試行」ボタンを出す。model_unavailable
@@ -26,6 +27,7 @@ type PendingMessage = {
   content: string;
   created_at: string;
   status: 'pending' | 'streaming';
+  attachments: FileMeta[];
 };
 
 export function isPendingMessage(m: DisplayMessage): m is PendingMessage {
@@ -42,16 +44,22 @@ type ChatError = {
   retryText?: string;
 };
 
+// 送信中〜確定前のユーザー発言の表示用スナップショット。テキストと添付を
+// まとめて 1 つの state にしているのは、両方が同時に現れて同時に消える
+// （user イベント受信で確定する）ライフサイクルだからで、分けると同期が崩れる。
+type PendingUser = { text: string; attachments: FileMeta[] };
+
 export function useChat() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-  const [pendingUserText, setPendingUserText] = useState<string | null>(null);
+  const [pendingUser, setPendingUser] = useState<PendingUser | null>(null);
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<ChatError | null>(null);
+  const attachmentsHook = useAttachments();
 
   // 「今アクティブな会話はどれか」をコールバック内から同期的に参照するための ref。
   // state は再レンダー後にしか読めないため、ストリーム受信中に会話が切り替わった
@@ -87,7 +95,7 @@ export function useChat() {
       setConversations((prev) =>
         prev.map((c) => (c.id === conversationId ? detail.conversation : c)).sort(byUpdatedAtDesc),
       );
-      setPendingUserText(null);
+      setPendingUser(null);
       setStreamingText(null);
     } catch {
       // 再取得にも失敗した場合は、ローカルに残っている表示をそのまま見せておく
@@ -128,7 +136,7 @@ export function useChat() {
     // 別の会話に移る＝いま受信中のストリームはもう画面に反映すべきでない。
     abortRef.current?.abort();
     setIsStreaming(false);
-    setPendingUserText(null);
+    setPendingUser(null);
     setStreamingText(null);
     setActiveId(id);
     setIsLoadingMessages(true);
@@ -154,7 +162,7 @@ export function useChat() {
     setIsStreaming(false);
     setActiveId(null);
     setMessages([]);
-    setPendingUserText(null);
+    setPendingUser(null);
     setStreamingText(null);
     setError(null);
   }, []);
@@ -179,12 +187,23 @@ export function useChat() {
   const isStreamingRef = useRef(false);
 
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, attachmentIds: string[]) => {
       const text = content.trim();
-      if (!text || isStreamingRef.current) return;
+      // 本文が空でも添付があれば送れる（添付のみの送信を許すため）。
+      if ((!text && attachmentIds.length === 0) || isStreamingRef.current) return;
+
+      // 表示用の FileMeta はこの時点の attachmentsHook の状態から引く。
+      // attachmentIds（サーバに送る ID）と実際に画面に見せる添付を同じ
+      // ソースから作ることで、両者がずれない。
+      const attachmentMetas = attachmentsHook.attachments
+        .filter(
+          (a): a is { localId: string; status: 'ready'; file: FileMeta } => a.status === 'ready',
+        )
+        .filter((a) => attachmentIds.includes(a.file.id))
+        .map((a) => a.file);
 
       setError(null);
-      setPendingUserText(text);
+      setPendingUser({ text, attachments: attachmentMetas });
       setStreamingText('');
       setIsStreaming(true);
       isStreamingRef.current = true;
@@ -211,13 +230,17 @@ export function useChat() {
         await api.sendMessage(
           cid,
           text,
+          attachmentIds,
           {
             onEvent: (evt) => {
               if (isStale()) return;
               switch (evt.event) {
                 case 'user':
-                  setPendingUserText(null);
+                  setPendingUser(null);
                   setMessages((prev) => [...prev, evt.data]);
+                  // サーバが受理した確証が取れた時点でプレビューを消す。これより
+                  // 早いと、送信に失敗したときに添付が画面から消えてしまう。
+                  attachmentsHook.clear();
                   break;
                 case 'delta':
                   setStreamingText((prev) => (prev ?? '') + evt.data.text);
@@ -240,10 +263,16 @@ export function useChat() {
                 case 'error':
                   // message はサーバ側でユーザー向け日本語に変換済みなので、
                   // ここで文面を作り直したり生ペイロードを混ぜたりしない。
+                  // 添付付きの送信は再試行ボタンを出さない（D9）。ユーザー発言は
+                  // 既に添付付きで永続化されており、同じ attachment_ids を
+                  // 再送すると 409 になるため。
                   setError({
                     message: evt.data.message,
                     scope: 'stream',
-                    retryText: RETRYABLE_ERROR_CODES.has(evt.data.code) ? text : undefined,
+                    retryText:
+                      RETRYABLE_ERROR_CODES.has(evt.data.code) && attachmentIds.length === 0
+                        ? text
+                        : undefined,
                   });
                   // streamingText はここでは消さない（reconcileAfterInterruption が
                   // サーバの実データを取得したあとにまとめて確定させる）。
@@ -265,7 +294,7 @@ export function useChat() {
           if (conversationId) await reconcileAfterInterruption(conversationId);
           return;
         }
-        setPendingUserText(null);
+        setPendingUser(null);
         setStreamingText(null);
         setError({ message: toErrorMessage(e), scope: 'stream' });
       } finally {
@@ -274,7 +303,7 @@ export function useChat() {
         abortRef.current = null;
       }
     },
-    [reconcileAfterInterruption],
+    [reconcileAfterInterruption, attachmentsHook],
   );
 
   const stopStreaming = useCallback(() => {
@@ -289,21 +318,24 @@ export function useChat() {
   const retryLastMessage = useCallback(() => {
     const retryText = error?.retryText;
     if (!retryText) return;
-    void sendMessage(retryText);
+    // retryText は添付なしの送信だったときだけ立つ（D9）ので、常に添付なしで
+    // 再送してよい。
+    void sendMessage(retryText, []);
   }, [error, sendMessage]);
 
   // 表示用に、確定済みメッセージへ「送信待ちのユーザー発言」「ストリーミング中の
   // 応答」を仮想メッセージとして連結する。components 側は DisplayMessage の
   // 配列だけを見ればよく、pending/streaming の状態を個別に気にしなくてよい。
   const displayMessages: DisplayMessage[] = [...messages];
-  if (pendingUserText !== null) {
+  if (pendingUser !== null) {
     displayMessages.push({
       id: 'pending-user',
       conversation_id: activeId ?? '',
       role: 'user',
-      content: pendingUserText,
+      content: pendingUser.text,
       created_at: new Date().toISOString(),
       status: 'pending',
+      attachments: pendingUser.attachments,
     });
   }
   if (streamingText !== null) {
@@ -314,6 +346,7 @@ export function useChat() {
       content: streamingText,
       created_at: new Date().toISOString(),
       status: 'streaming',
+      attachments: [],
     });
   }
 
@@ -332,6 +365,13 @@ export function useChat() {
     stopStreaming,
     dismissError,
     retryLastMessage,
+    // 送信前の添付プレビュー状態。ChatPane → Composer への props 経路を 1 本に
+    // 保つため、独立フックとして App 側に併置せずここで再公開する。
+    attachments: attachmentsHook.attachments,
+    addAttachments: attachmentsHook.addFiles,
+    removeAttachment: attachmentsHook.remove,
+    isUploadingAttachments: attachmentsHook.isUploading,
+    readyAttachmentIds: attachmentsHook.readyIds,
   };
 }
 

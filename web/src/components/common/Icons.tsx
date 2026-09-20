@@ -74,6 +74,20 @@ export function SparkleIcon({ size = 40 }: IconProps) {
   );
 }
 
+export function PaperclipIcon({ size = 18 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M8 12.5L14.5 6C15.9 4.6 18.2 4.6 19.6 6C21 7.4 21 9.7 19.6 11.1L11.4 19.3C9.6 21.1 6.7 21.1 4.9 19.3C3.1 17.5 3.1 14.6 4.9 12.8L13 4.7"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function AlertIcon({ size = 18 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">

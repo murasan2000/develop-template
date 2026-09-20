@@ -6,6 +6,7 @@ import type {
   Conversation,
   ConversationDetail,
   CreateConversationRequest,
+  FileMeta,
   HealthResponse,
 } from '../types/api';
 
@@ -72,6 +73,31 @@ export async function deleteConversation(id: string): Promise<void> {
   await throwIfError(res);
 }
 
+/**
+ * ファイルを 1 件アップロードする。
+ *
+ * `requestJson` は使わない。`fetch` に `Content-Type` を渡すと固定の
+ * `application/json` になってしまい、`FormData` に必要な
+ * `multipart/form-data; boundary=...`（ブラウザが自動生成する）を上書きして
+ * サーバ側のパースを壊す。そのためヘッダを一切指定せず、ブラウザに任せる。
+ */
+export async function uploadFile(file: File, signal?: AbortSignal): Promise<FileMeta> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(`${BASE_URL}/files`, {
+    method: 'POST',
+    body: form,
+    signal,
+  });
+  await throwIfError(res);
+  return (await res.json()) as FileMeta;
+}
+
+export async function deleteFile(id: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/files/${id}`, { method: 'DELETE' });
+  await throwIfError(res);
+}
+
 export type ChatStreamCallbacks = {
   onEvent: (event: ChatStreamEvent) => void;
 };
@@ -87,13 +113,14 @@ export type ChatStreamCallbacks = {
 export async function sendMessage(
   conversationId: string,
   content: string,
+  attachmentIds: string[],
   { onEvent }: ChatStreamCallbacks,
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${BASE_URL}/conversations/${conversationId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, attachment_ids: attachmentIds }),
     signal,
   });
   await throwIfError(res);
